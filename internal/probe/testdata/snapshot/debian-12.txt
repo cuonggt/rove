@@ -1,0 +1,20 @@
+rove-probe 1
+sys.kind=linux
+sys.kernel=7.0.14-orbstack-00380-ga7e0a2dc9535
+sys.arch=aarch64
+sys.os=Debian GNU/Linux 12 (bookworm)
+sys.uptime_s=429485
+cpu.cores=10
+cpu.stat=cpu  3843934 0 921648 423986075 76280 0 102577 0 0 0
+load=3.49 2.66 1.21
+mem.total_kb=8196572
+mem.available_kb=5527036
+swap.total_kb=9245140
+swap.free_kb=9081420
+fs=overlay 113377280 73544968 /
+fs=tmpfs 65536 0 /dev
+fs=shm 4098048 0 /dev/shm
+fs=/dev/vdb1 113377280 73544968 /etc/hosts
+fs=tmpfs 4 0 /proc/asound
+svc.init=sysvinit
+probe.ms=30

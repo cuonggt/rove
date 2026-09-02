@@ -1,0 +1,26 @@
+rove-probe 1
+sys.kind=linux
+sys.kernel=7.0.14-orbstack-00380-ga7e0a2dc9535
+sys.arch=aarch64
+sys.os=Ubuntu 24.04.4 LTS
+sys.uptime_s=432404
+cpu.cores=10
+cpu.stat=cpu  3858548 0 934032 426845118 79977 0 105784 0 0 0
+load=0.17 0.22 0.25
+mem.total_kb=8196572
+mem.available_kb=5639732
+swap.total_kb=9245140
+swap.free_kb=9094432
+fs=overlay 109576192 72813072 /
+fs=tmpfs 65536 0 /dev
+fs=shm 4098048 0 /dev/shm
+fs=/dev/vdb1 109576192 72813072 /etc/hosts
+fs=tmpfs 1639316 40 /run
+fs=tmpfs 5120 0 /run/lock
+net=lo 127.0.0.1
+net=eth0 192.168.215.9
+svc.init=systemd
+svc.state=degraded
+svc.query=ok
+svc.failed=rove-broken.service
+probe.ms=49

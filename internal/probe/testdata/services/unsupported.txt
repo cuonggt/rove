@@ -1,0 +1,2 @@
+rove-services 1
+svc.init=unsupported

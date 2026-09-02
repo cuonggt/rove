@@ -1,0 +1,6 @@
+tk
+tk.pub
+authorized_keys
+config
+Dockerfile.*
+config-nokey

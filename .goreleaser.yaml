@@ -1,0 +1,97 @@
+version: 2
+
+project_name: rove
+
+before:
+  hooks:
+    - go mod tidy
+    - go vet ./...
+    - go test ./...
+
+builds:
+  - id: rove
+    main: ./cmd/rove
+    binary: rove
+    # No cgo anywhere: rove shells out to the user's own ssh and links
+    # nothing, so a static binary runs on any glibc or musl host.
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.date={{ .CommitDate }}
+    # Reproducible archives: without this the mtime is the build time and
+    # two builds of the same commit differ.
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: rove
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - LICENSE.md
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - Merge pull request
+      - Merge branch
+
+# Formulas are deprecated in goreleaser; casks are the supported path.
+# Casks are macOS-only, so Linux installs from the tarball or `go install`.
+homebrew_casks:
+  - name: rove
+    repository:
+      owner: cuonggt
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Casks
+    homepage: https://github.com/cuonggt/rove
+    description: A terminal console for the Linux servers you already reach over ssh
+    # An unsigned binary that arrived over the network is quarantined by
+    # Gatekeeper and refuses to run at all. Clearing the attribute on install
+    # is the documented way to ship an unsigned cask.
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/rove"]
+          end
+
+release:
+  footer: |
+    ## Install
+
+    macOS:
+
+    ```
+    brew install --cask cuonggt/tap/rove
+    ```
+
+    Linux: download the tarball below, or `go install github.com/cuonggt/rove/cmd/rove@latest`.
+
+    rove needs no configuration. If `ssh <host>` works, rove works.

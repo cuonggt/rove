@@ -1,0 +1,16 @@
+rove-processes 1
+proc.fields=pid,user,cpu,mem,rss,args
+proc.sorted=cpu
+proc.total=12
+proc=223 tester    100  0.0  3848 ps -eo pid=,user=,pcpu=,pmem=,rss=,args= --sort=-pcpu
+proc=208 root     34.6  0.0  7896 sshd: tester [priv]
+proc=22 root      0.1  0.0  7604 /usr/lib/systemd/systemd-journald
+proc=1 root      0.0  0.0  4500 /sbin/init
+proc=78 root      0.0  0.0  3844 sshd: /usr/sbin/sshd -D [listener] 0 of 10-100 startups
+proc=75 root      0.0  0.0  1584 /usr/lib/systemd/systemd-logind
+proc=71 message+  0.0  0.0  2480 @dbus-daemon --system --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only
+proc=219 tester    0.0  0.0  5908 sshd: tester@notty
+proc=220 tester    0.0  0.0  1576 sh -c sh -s
+proc=221 tester    0.0  0.0  1612 sh -s
+proc=222 tester    0.0  0.0   812 sh -s
+proc=224 tester    0.0  0.0  1944 awk $1 ~ /^[0-9]+$/

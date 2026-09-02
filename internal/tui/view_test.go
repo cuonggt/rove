@@ -1,0 +1,307 @@
+package tui
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	rexec "github.com/cuonggt/rove/internal/exec"
+	"github.com/cuonggt/rove/internal/fleet"
+	"github.com/cuonggt/rove/internal/model"
+)
+
+func healthyProbe(load string) string {
+	return "rove-probe 1\n" +
+		"sys.kind=linux\nsys.os=Ubuntu 24.04 LTS\nsys.kernel=6.8.0\nsys.arch=aarch64\n" +
+		"sys.uptime_s=4147200\ncpu.cores=4\n" +
+		"cpu.stat=cpu  1000 0 0 9000 0 0 0 0\n" +
+		"load=" + load + "\n" +
+		"mem.total_kb=8000000\nmem.available_kb=2640000\n" +
+		"fs=/dev/sda1 80000000 32000000 /\n" +
+		"net=eth0 10.0.1.24\nsvc.init=systemd\n"
+}
+
+func servers(names ...string) []model.Server {
+	out := make([]model.Server, len(names))
+	for i, n := range names {
+		out[i] = model.Server{
+			Name: n, Source: model.SourceSSHConfig, Conn: model.ConnSSH,
+			Meta: model.Meta{Env: "prod", Tags: []string{"web"}},
+		}
+	}
+	return out
+}
+
+// build returns a model whose hosts have all been probed once, sized to
+// width columns.
+func build(t *testing.T, fake *rexec.Fake, width int, names ...string) Model {
+	t.Helper()
+	f := fleet.New(fake, servers(names...), 4, time.Second)
+	f.RefreshAll(context.Background())
+
+	m := New(f, Options{Interval: time.Hour})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 40})
+	return next.(Model)
+}
+
+func healthy(t *testing.T, width int, names ...string) Model {
+	t.Helper()
+	return build(t, &rexec.Fake{Default: rexec.FakeResponse{Stdout: healthyProbe("0.42 0.30 0.20")}}, width, names...)
+}
+
+// Columns are dropped in a deliberate order as the terminal narrows: the
+// note survives longer than the environment, because a sentence saying what
+// is wrong beats a label saying where the host lives.
+func TestColumnsDropInPriorityOrder(t *testing.T) {
+	cases := []struct {
+		width int
+		want  []string
+		gone  []string
+	}{
+		{120, []string{"HOST", "ENV", "CPU", "MEM", "DISK", "LOAD", "NOTE"}, nil},
+		{90, []string{"HOST", "CPU", "MEM", "DISK", "LOAD", "NOTE"}, []string{"ENV"}},
+		{80, []string{"HOST", "CPU", "MEM", "DISK"}, []string{"ENV"}},
+		{64, []string{"HOST", "CPU", "MEM", "DISK"}, []string{"ENV", "NOTE"}},
+	}
+	for _, c := range cases {
+		m := healthy(t, c.width, "web-01")
+		got := m.View()
+		for _, col := range c.want {
+			if !strings.Contains(got, col) {
+				t.Errorf("width %d: missing column %q\n%s", c.width, col, got)
+			}
+		}
+		for _, col := range c.gone {
+			if strings.Contains(got, col) {
+				t.Errorf("width %d: column %q should have been dropped\n%s", c.width, col, got)
+			}
+		}
+	}
+}
+
+// No row may push the body into wrapping; every line must fit the terminal.
+func TestNoLineExceedsTerminalWidth(t *testing.T) {
+	for _, width := range []int{64, 80, 100, 120, 200} {
+		m := healthy(t, width, "web-01", "a-very-long-hostname-that-would-overflow", "db-01")
+		for i, line := range strings.Split(m.View(), "\n") {
+			if w := len([]rune(line)); w > width {
+				t.Errorf("width %d: line %d is %d columns\n%q", width, i, w, line)
+			}
+		}
+	}
+}
+
+func TestHealthyHostIsQuiet(t *testing.T) {
+	m := healthy(t, 120, "web-01")
+	got := m.View()
+	if !strings.Contains(got, "1 host · 1 ok") {
+		t.Errorf("summary missing:\n%s", got)
+	}
+	if strings.Contains(got, "need attention") {
+		t.Errorf("a healthy fleet should not mention attention:\n%s", got)
+	}
+}
+
+// A failure has to say what happened and, in the detail view, what fixes it.
+func TestFailureShowsReasonAndFix(t *testing.T) {
+	m := build(t, &rexec.Fake{Default: rexec.FakeResponse{
+		Err: &rexec.TransportError{
+			Err:    errors.New("exit status 255"),
+			Stderr: "tester@web-01: Permission denied (publickey).",
+		},
+	}}, 120, "web-01")
+
+	got := m.View()
+	if !strings.Contains(got, "authentication failed") {
+		t.Errorf("fleet view should name the failure:\n%s", got)
+	}
+	if !strings.Contains(got, "need attention") {
+		t.Errorf("summary should count it:\n%s", got)
+	}
+
+	m.view = screenOverview
+	detail := m.View()
+	if !strings.Contains(detail, "ssh web-01") {
+		t.Errorf("detail view should offer the fix:\n%s", detail)
+	}
+}
+
+// Figures from a host that has stopped answering are kept, not blanked, and
+// labelled with their age.
+func TestStaleFiguresAreKeptAndAged(t *testing.T) {
+	fake := &rexec.Fake{Default: rexec.FakeResponse{Stdout: healthyProbe("0.42 0.30 0.20")}}
+	m := healthy(t, 120, "web-01")
+
+	fake.Default = rexec.FakeResponse{
+		Err: &rexec.TransportError{
+			Err:    errors.New("exit status 255"),
+			Stderr: "ssh: connect to host web-01 port 22: Operation timed out",
+		},
+	}
+	f := fleet.New(fake, servers("web-01"), 4, time.Second)
+	f.RefreshAll(context.Background()) // fails with no prior success
+
+	// Now the case that matters: success, then failure.
+	fake.Default = rexec.FakeResponse{Stdout: healthyProbe("0.42 0.30 0.20")}
+	f.RefreshAll(context.Background())
+	fake.Default = rexec.FakeResponse{
+		Err: &rexec.TransportError{
+			Err:    errors.New("exit status 255"),
+			Stderr: "ssh: connect to host web-01 port 22: Operation timed out",
+		},
+	}
+	f.RefreshAll(context.Background())
+
+	m2 := New(f, Options{Interval: time.Hour})
+	next, _ := m2.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	got := next.(Model).View()
+
+	if !strings.Contains(got, "67%") {
+		t.Errorf("memory from the last good probe should still be shown:\n%s", got)
+	}
+	if !strings.Contains(got, "timed out") || !strings.Contains(got, "ago") {
+		t.Errorf("note should carry the reason and an age:\n%s", got)
+	}
+	_ = m
+}
+
+func TestFilterNarrowsRows(t *testing.T) {
+	m := healthy(t, 120, "prod-api", "prod-db", "staging-api")
+
+	m.filter = "db"
+	got := m.View()
+	if !strings.Contains(got, "prod-db") {
+		t.Errorf("filter dropped the match:\n%s", got)
+	}
+	if strings.Contains(got, "staging-api") {
+		t.Errorf("filter kept a non-match:\n%s", got)
+	}
+
+	m.filter = "nothing-matches-this"
+	if !strings.Contains(m.View(), "no host matches") {
+		t.Errorf("an empty result should say so:\n%s", m.View())
+	}
+}
+
+// Tags and environment are searchable, because they are what a person types
+// when they mean "the web boxes".
+func TestFilterSearchesTagsAndEnv(t *testing.T) {
+	m := healthy(t, 120, "alpha", "beta")
+	for _, q := range []string{"prod", "web"} {
+		m.filter = q
+		if len(m.visible()) != 2 {
+			t.Errorf("filter %q matched %d hosts, want 2", q, len(m.visible()))
+		}
+	}
+}
+
+// The selection follows the host, not the row. Filtering changes which index
+// a host sits at; a position-based cursor would jump to a different machine.
+func TestCursorSticksToHostNotIndex(t *testing.T) {
+	m := healthy(t, 120, "aaa", "bbb", "ccc")
+
+	m.cursor = "ccc"
+	m.filter = "c" // ccc is now at index 0 instead of 2
+	if h, ok := m.selected(); !ok || h.Server.Name != "ccc" {
+		t.Fatalf("selection = %+v, want ccc", h.Server.Name)
+	}
+
+	// Filtering the selection away moves to a row that exists.
+	m.filter = "a"
+	m.clampCursor()
+	if h, _ := m.selected(); h.Server.Name != "aaa" {
+		t.Errorf("selection = %q, want aaa after its row was filtered out", h.Server.Name)
+	}
+}
+
+func TestDetailViewShowsMetersAndIdentity(t *testing.T) {
+	m := healthy(t, 120, "web-01")
+	m.view = screenOverview
+	got := m.View()
+
+	for _, want := range []string{
+		"Ubuntu 24.04 LTS", // identity
+		"up 48d",           // uptime, formatted not raw seconds
+		"aarch64",
+		"Memory", "Disk", "Load",
+		"4 cores",
+		"eth0", "10.0.1.24",
+		"needs a second sample", // CPU has no delta yet, and says why
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("detail view missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestFailedUnitsAreListed(t *testing.T) {
+	probe := healthyProbe("0.42 0.30 0.20") + "svc.failed=backup.service\nsvc.failed=cron.service\n"
+	m := build(t, &rexec.Fake{Default: rexec.FakeResponse{Stdout: probe}}, 120, "web-01")
+
+	if !strings.Contains(m.View(), "2 failed units") {
+		t.Errorf("fleet note should count them:\n%s", m.View())
+	}
+	m.view = screenOverview
+	got := m.View()
+	if !strings.Contains(got, "backup.service") || !strings.Contains(got, "cron.service") {
+		t.Errorf("detail view should name them:\n%s", got)
+	}
+}
+
+// ASCII mode must not emit any character outside the printable ASCII range,
+// so the interface survives a terminal without a Unicode font.
+func TestASCIIModeEmitsOnlyASCII(t *testing.T) {
+	f := fleet.New(&rexec.Fake{Default: rexec.FakeResponse{Stdout: healthyProbe("9.2 8 7")}},
+		servers("web-01"), 4, time.Second)
+	f.RefreshAll(context.Background())
+
+	m := New(f, Options{Interval: time.Hour, ASCII: true})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	mm := next.(Model)
+
+	for _, view := range []string{mm.View(), func() string { mm.view = screenOverview; return mm.View() }()} {
+		for _, r := range view {
+			if r > 126 {
+				t.Fatalf("non-ascii rune %q in ascii mode:\n%s", r, view)
+			}
+		}
+	}
+}
+
+// A refresh must not be re-queued on every frame once the interval elapses.
+func TestRefreshIsNotRequeuedEveryTick(t *testing.T) {
+	f := fleet.New(&rexec.Fake{Default: rexec.FakeResponse{Stdout: healthyProbe("0.42 0.30 0.20")}},
+		servers("web-01"), 4, time.Second)
+
+	m := New(f, Options{Interval: time.Millisecond})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	mm := next.(Model)
+	mm.inflight = map[string]bool{} // pretend the opening round finished
+
+	time.Sleep(2 * time.Millisecond)
+
+	n1, _ := mm.Update(tickMsg(time.Now()))
+	first := n1.(Model)
+	if first.lastRefresh.Equal(mm.lastRefresh) {
+		t.Fatal("an elapsed interval should stamp lastRefresh")
+	}
+
+	// Immediately after, with the interval not yet elapsed again, nothing
+	// new should be scheduled.
+	first.inflight = map[string]bool{}
+	n2, _ := first.Update(tickMsg(time.Now()))
+	if !n2.(Model).lastRefresh.Equal(first.lastRefresh) {
+		t.Error("a refresh was re-queued before the interval elapsed")
+	}
+}
+
+func TestNarrowTerminalSaysSoInsteadOfBreaking(t *testing.T) {
+	m := healthy(t, 40, "web-01")
+	if !strings.Contains(m.View(), "wider terminal") {
+		t.Errorf("a too-narrow terminal should explain itself:\n%s", m.View())
+	}
+}

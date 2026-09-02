@@ -1,0 +1,10 @@
+rove-processes 1
+proc.fields=pid,user,vsz,comm
+proc.total=7
+proc=1 root     6824 sshd
+proc=25 root     6860 sshd
+proc=27 tester   7096 sshd
+proc=28 tester   1736 sh
+proc=35 tester   1736 sh
+proc=36 tester   1724 ps
+proc=37 tester   1728 awk
