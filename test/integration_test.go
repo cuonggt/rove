@@ -206,3 +206,49 @@ func TestHostileUnitNameNeverReachesTheHost(t *testing.T) {
 		t.Fatal("a shell-injecting unit name was accepted")
 	}
 }
+
+// Ports, end to end. Every fixture runs sshd, so every one of them must
+// report something listening on 22 and say whether owners were readable.
+func TestPortsAcrossDistros(t *testing.T) {
+	f := newFleet(t)
+	ctx := context.Background()
+
+	for _, h := range f.Hosts() {
+		t.Run(h.Server.Name, func(t *testing.T) {
+			list, err := f.Ports(ctx, h.Server.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !list.Available() {
+				t.Fatalf("no socket source: %s", list.Err)
+			}
+
+			var ssh bool
+			for _, l := range list.Listeners {
+				if l.Port == 22 {
+					ssh = true
+				}
+				if l.Port <= 0 || l.Port > 65535 {
+					t.Errorf("implausible port %d", l.Port)
+				}
+			}
+			if !ssh {
+				t.Error("we arrived over ssh; port 22 should be listening")
+			}
+			if list.ExposedCount() == 0 {
+				t.Error("sshd binds the network, so something should be exposed")
+			}
+
+			// An unprivileged account cannot read another user's socket
+			// owner. Whichever it was, the capture must say so rather than
+			// leaving a blank column to be misread.
+			if list.Limited {
+				for _, l := range list.Listeners {
+					if l.HasProcess {
+						t.Errorf("limited listing named an owner: %+v", l)
+					}
+				}
+			}
+		})
+	}
+}

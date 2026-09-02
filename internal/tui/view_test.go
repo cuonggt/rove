@@ -3,11 +3,13 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	rexec "github.com/cuonggt/rove/internal/exec"
 	"github.com/cuonggt/rove/internal/fleet"
@@ -356,3 +358,77 @@ func TestLogsViewNamesANonJournalSource(t *testing.T) {
 		t.Errorf("footer should name the file source, got:\n%s", out)
 	}
 }
+
+// The screen switcher grows with every screen. It must give way to the
+// status rather than pushing it off the line, at every width.
+func TestFooterKeepsStatusAsScreensAccumulate(t *testing.T) {
+	for _, width := range []int{80, 100, 120, 160} {
+		t.Run(fmt.Sprint(width), func(t *testing.T) {
+			m := healthy(t, width, "web-01")
+			m.view = screenPorts
+			m.ports["web-01"] = model.PortList{
+				Source:    "ss",
+				Listeners: []model.Listener{{Proto: "tcp", Addr: "0.0.0.0", Port: 22, Process: "sshd", HasProcess: true}},
+				Conns:     []model.ConnState{{State: "ESTAB", Count: 3}},
+			}
+
+			out := m.View()
+			if !strings.Contains(out, "1 listening") {
+				t.Errorf("status lost at width %d:\n%s", width, out)
+			}
+			for _, line := range strings.Split(out, "\n") {
+				if lipglossWidth(line) > width {
+					t.Errorf("line overflows %d columns: %q", width, line)
+				}
+			}
+		})
+	}
+}
+
+// The judgment the raw tools do not make: what the network can reach.
+func TestPortsViewMarksNetworkFacingSockets(t *testing.T) {
+	m := healthy(t, 120, "web-01")
+	m.view = screenPorts
+	m.ports["web-01"] = model.PortList{
+		Source: "ss",
+		Listeners: []model.Listener{
+			{Proto: "tcp", Addr: "127.0.0.1", Port: 5432, Process: "postgres", HasProcess: true},
+			{Proto: "tcp", Addr: "0.0.0.0", Port: 443, Process: "nginx", HasProcess: true},
+		},
+	}
+
+	out := m.View()
+	if !strings.Contains(out, "network") || !strings.Contains(out, "local") {
+		t.Error("scope must be stated, not inferred from the address")
+	}
+	if !strings.Contains(out, "1 on the network") {
+		t.Error("the footer should count what faces the network")
+	}
+	// 443 is exposed and must sort above the loopback 5432.
+	if strings.Index(out, "443") > strings.Index(out, "5432") {
+		t.Error("network-facing sockets must appear first")
+	}
+}
+
+// Missing owners mean "root required", not "no process".
+func TestPortsViewExplainsMissingOwners(t *testing.T) {
+	m := healthy(t, 120, "web-01")
+	m.view = screenPorts
+	m.ports["web-01"] = model.PortList{
+		Source:    "ss",
+		Limited:   true,
+		Listeners: []model.Listener{{Proto: "tcp", Addr: "0.0.0.0", Port: 22}},
+	}
+
+	out := m.View()
+	if !strings.Contains(out, "owners need root") {
+		t.Error("a blank owner column must be explained")
+	}
+	if !strings.Contains(out, "ports below are complete") {
+		t.Error("the reader must know the ports themselves are not truncated")
+	}
+}
+
+// lipglossWidth measures display cells, so styled output is compared by what
+// the terminal shows rather than by byte length.
+func lipglossWidth(s string) int { return lipgloss.Width(s) }

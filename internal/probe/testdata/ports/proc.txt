@@ -1,0 +1,7 @@
+rove-ports 1
+port.source=proc
+port.limited=1
+listen=tcp 0.0.0.0 22 - -
+listen=tcp :: 22 - -
+conn=LISTEN 2
+conn=ESTAB 2

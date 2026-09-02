@@ -28,9 +28,13 @@ func (m Model) screenTitle(h fleet.Host, name string) string {
 	return left + strings.Repeat(" ", gap) + dim.Render(right)
 }
 
-// detailKeys is the footer shared by the detail screens, with the current
-// one marked so it is obvious where you are.
-func (m Model) detailKeys(current screen) string {
+// detailKeys renders the screen switcher at the widest form that fits.
+//
+// Every screen added to v0.2 lengthens this list, and a footer that grows
+// until it squeezes out the status is a footer that silently stops
+// reporting. So it degrades in steps instead: full labels, then tight
+// labels, then bare keys.
+func (m Model) detailKeys(current screen, avail int) string {
 	type entry struct {
 		key, label string
 		at         screen
@@ -41,24 +45,49 @@ func (m Model) detailKeys(current screen) string {
 		{"v", "services", screenServices},
 		{"d", "disk", screenDisk},
 		{"l", "logs", screenLogs},
+		{"n", "ports", screenPorts},
 	}
-	parts := make([]string, 0, len(entries)+2)
-	for _, e := range entries {
-		if e.at == current {
-			parts = append(parts, boldStyle.Render(e.key+" "+e.label))
-			continue
+
+	render := func(sep string, labels bool) string {
+		parts := make([]string, 0, len(entries)+2)
+		for _, e := range entries {
+			text := e.key
+			if labels {
+				text = e.key + " " + e.label
+			}
+			if e.at == current {
+				parts = append(parts, boldStyle.Render(text))
+				continue
+			}
+			if labels {
+				parts = append(parts, accent.Render(e.key)+" "+e.label)
+			} else {
+				parts = append(parts, accent.Render(e.key))
+			}
 		}
-		parts = append(parts, accent.Render(e.key)+" "+e.label)
+		if labels {
+			parts = append(parts, accent.Render("s")+" shell", accent.Render("esc")+" back")
+		} else {
+			parts = append(parts, accent.Render("s"), accent.Render("esc"))
+		}
+		return dim.Render(strings.Join(parts, sep))
 	}
-	parts = append(parts, accent.Render("s")+" shell", accent.Render("esc")+" back")
-	return dim.Render(strings.Join(parts, "   "))
+
+	for _, candidate := range []string{render("   ", true), render(" ", true), render(" ", false)} {
+		if lipgloss.Width(candidate) <= avail {
+			return candidate
+		}
+	}
+	return render(" ", false)
 }
 
-// footerWith right-aligns a status against the shared key list.
+// footerWith right-aligns a status against the key list, shrinking the keys
+// rather than dropping the status.
 func (m Model) footerWith(current screen, right string) string {
-	left := m.detailKeys(current)
+	avail := m.width - lipgloss.Width(right) - 2
+	left := m.detailKeys(current, avail)
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
-	if gap < 2 {
+	if gap < 1 {
 		return left
 	}
 	return left + strings.Repeat(" ", gap) + dim.Render(right)
@@ -446,4 +475,103 @@ func orDefault(s, fallback string) string {
 		return fallback
 	}
 	return s
+}
+
+// -------------------------------------------------------------------- ports
+
+// portsView answers "what can reach this machine". The sockets facing the
+// network sort first, because that is the half of the list anyone opening
+// this screen actually came for.
+func (m Model) portsView(h fleet.Host) string {
+	var b strings.Builder
+	b.WriteString(m.screenTitle(h, "ports"))
+	b.WriteString("\n\n")
+
+	if msg, ok := m.portErr[h.Server.Name]; ok {
+		b.WriteString("  " + brick.Render("could not read the sockets") + "\n")
+		b.WriteString("  " + dim.Render(msg) + "\n\n")
+		b.WriteString(m.footerWith(screenPorts, ""))
+		return b.String()
+	}
+
+	list, have := m.ports[h.Server.Name]
+	if !have {
+		b.WriteString(dim.Render("  reading the sockets…"))
+		b.WriteString("\n\n")
+		b.WriteString(m.footerWith(screenPorts, ""))
+		return b.String()
+	}
+	if !list.Available() {
+		b.WriteString("  " + amber.Render("no socket listing available") + "\n")
+		if list.Err != "" {
+			b.WriteString("  " + dim.Render(list.Err) + "\n")
+		}
+		b.WriteString("\n")
+		b.WriteString(m.footerWith(screenPorts, ""))
+		return b.String()
+	}
+
+	// The ports are complete either way; only the owners are missing. Say
+	// exactly that, so a blank column is not read as "no process".
+	if list.Limited {
+		b.WriteString("  " + dim.Render("owners need root; the ports below are complete") + "\n\n")
+	}
+
+	const protoW, portW, scopeW = 6, 6, 8
+	addrW := 22
+	procW := m.width - (2 + protoW + 1 + addrW + 1 + portW + 1 + scopeW + 2)
+	if procW < 10 {
+		procW = 10
+		addrW = maxInt(10, m.width-(2+protoW+1+portW+1+scopeW+2+procW))
+	}
+
+	header := "  " + pad("PROTO", protoW) + " " + pad("ADDRESS", addrW) + " " +
+		padLeft("PORT", portW) + " " + pad("SCOPE", scopeW) + "  " + pad("PROCESS", procW)
+	b.WriteString(dim.Render(header))
+	b.WriteString("\n")
+
+	listeners := list.Ordered()
+	from, to := m.window(len(listeners))
+	for i := from; i < to; i++ {
+		l := listeners[i]
+		cursor := " "
+		if i == m.rowIndex {
+			cursor = accent.Render(m.g.cursor)
+		}
+
+		scope, scopeStyle := "local", dim
+		if l.Exposed() {
+			// Not a warning: a web server on 0.0.0.0 is doing its job.
+			// It is where the eye should land first, so it gets the accent.
+			scope, scopeStyle = "network", accent
+		}
+
+		proc := dim.Render(pad(m.blank(), procW))
+		if l.HasProcess {
+			proc = pad(l.Process, procW)
+		}
+
+		b.WriteString(cursor + " " +
+			dim.Render(pad(l.Proto, protoW)) + " " +
+			pad(l.Addr, addrW) + " " +
+			padLeft(fmt.Sprint(l.Port), portW) + " " +
+			scopeStyle.Render(pad(scope, scopeW)) + "  " +
+			proc)
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString(m.footerWith(screenPorts, m.portFooter(list)))
+	return b.String()
+}
+
+func (m Model) portFooter(list model.PortList) string {
+	parts := []string{fmt.Sprintf("%d listening", len(list.Listeners))}
+	if n := list.ExposedCount(); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d on the network", n))
+	}
+	if n := list.Established(); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d established", n))
+	}
+	return strings.Join(parts, "  "+m.g.sep+"  ")
 }

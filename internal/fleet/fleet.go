@@ -337,3 +337,20 @@ func (f *Fleet) Logs(ctx context.Context, name, unit string, lines int) (model.L
 	defer cancel()
 	return probe.RunLogs(hctx, f.ex, h.Server.Target(), unit, lines)
 }
+
+// Ports collects what one host is listening on, on demand.
+func (f *Fleet) Ports(ctx context.Context, name string) (model.PortList, error) {
+	h, ok := f.host(name)
+	if !ok {
+		return model.PortList{}, errUnknownHost
+	}
+	release, err := f.acquire(ctx)
+	if err != nil {
+		return model.PortList{}, err
+	}
+	defer release()
+
+	hctx, cancel := context.WithTimeout(ctx, f.timeout)
+	defer cancel()
+	return probe.RunPorts(hctx, f.ex, h.Server.Target())
+}
