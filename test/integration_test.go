@@ -135,3 +135,74 @@ func (n *noKeyExecutor) Run(ctx context.Context, t model.Target, c rexec.Command
 	inner.ConfigPath = "fixtures/sshd/config-nokey"
 	return inner.Run(ctx, t, c)
 }
+
+// The v0.2 promise, end to end: a unit is marked failed on the fleet view,
+// and the log says why without anyone recalling journalctl's flags.
+func TestLogsExplainAFailedUnit(t *testing.T) {
+	f := newFleet(t)
+	const host = "rove-fixture-ubuntu-systemd"
+	if _, ok := f.Server(host); !ok {
+		t.Skip("systemd fixture not running")
+	}
+	ctx := context.Background()
+
+	svcs, err := f.Services(ctx, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := svcs.FailedUnits()
+	if len(failed) == 0 {
+		t.Fatal("the fixture ships a unit that always fails; none was reported")
+	}
+
+	tail, err := f.Logs(ctx, host, failed[0].Name, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !tail.Available() {
+		t.Fatalf("no log for %s: %s", failed[0].Name, tail.Err)
+	}
+	if tail.Partial() {
+		t.Errorf("the fixture account is in adm and should see the whole journal")
+	}
+
+	joined := strings.Join(tail.Lines, "\n")
+	if !strings.Contains(joined, "Failed with result") {
+		t.Errorf("the log does not explain the failure:\n%s", joined)
+	}
+}
+
+// Every host must answer a system-wide log request with either lines or a
+// reason. Silence would be indistinguishable from a healthy quiet host.
+func TestEveryHostExplainsItsLogSituation(t *testing.T) {
+	f := newFleet(t)
+	ctx := context.Background()
+	for _, h := range f.Hosts() {
+		t.Run(h.Server.Name, func(t *testing.T) {
+			tail, err := f.Logs(ctx, h.Server.Name, "", 20)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !tail.Available() && tail.Err == "" {
+				t.Error("an unavailable log must carry a reason")
+			}
+			if tail.Available() && len(tail.Lines) == 0 && tail.Err == "" {
+				t.Error("an empty tail must say why it is empty")
+			}
+		})
+	}
+}
+
+// A unit name reaches a remote shell through ssh's argv concatenation, and
+// it originates from that host's own output.
+func TestHostileUnitNameNeverReachesTheHost(t *testing.T) {
+	f := newFleet(t)
+	hosts := f.Hosts()
+	if len(hosts) == 0 {
+		t.Skip("no hosts")
+	}
+	_, err := f.Logs(context.Background(), hosts[0].Server.Name, "x; id > /tmp/rove-pwned", 10)
+	if err == nil {
+		t.Fatal("a shell-injecting unit name was accepted")
+	}
+}

@@ -305,3 +305,54 @@ func TestNarrowTerminalSaysSoInsteadOfBreaking(t *testing.T) {
 		t.Errorf("a too-narrow terminal should explain itself:\n%s", m.View())
 	}
 }
+
+// The logs screen exists to answer "failed how". These assert the reader is
+// never shown a partial or absent log as if it were the whole story.
+func TestLogsViewSaysWhyItIsEmpty(t *testing.T) {
+	m := healthy(t, 120, "web-01")
+	m.view = screenLogs
+	m.logUnit = "backup.service"
+	m.logs[logKey("web-01", "backup.service")] = model.LogTail{
+		Source: "none",
+		Err:    "this account sees only its own messages; add it to the systemd-journal or adm group",
+	}
+
+	out := m.View()
+	if !strings.Contains(out, "no log to read") {
+		t.Error("an unreadable log must say so")
+	}
+	if !strings.Contains(out, "systemd-journal") {
+		t.Error("the reason must name the fix")
+	}
+}
+
+func TestLogsViewFlagsAPartialTail(t *testing.T) {
+	m := healthy(t, 120, "web-01")
+	m.view = screenLogs
+	m.logs[logKey("web-01", "")] = model.LogTail{
+		Source:  "journald",
+		Limited: true,
+		Lines:   []string{"2026-09-02 something happened"},
+	}
+
+	out := m.View()
+	if !strings.Contains(out, "only this account's own messages") {
+		t.Error("a partial tail must be flagged above the lines")
+	}
+}
+
+// A syslog file filters by substring, not by unit, so the footer must not
+// imply journald accuracy.
+func TestLogsViewNamesANonJournalSource(t *testing.T) {
+	m := healthy(t, 120, "web-01")
+	m.view = screenLogs
+	m.logs[logKey("web-01", "")] = model.LogTail{
+		Source: "/var/log/messages",
+		Lines:  []string{"line one"},
+	}
+
+	out := m.View()
+	if !strings.Contains(out, "file /var/log/messages") {
+		t.Errorf("footer should name the file source, got:\n%s", out)
+	}
+}

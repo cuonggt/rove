@@ -319,3 +319,21 @@ func (f *Fleet) acquire(ctx context.Context) (func(), error) {
 		return nil, ctx.Err()
 	}
 }
+
+// Logs tails one host's log on demand, optionally scoped to a single unit.
+// An empty unit means the whole system.
+func (f *Fleet) Logs(ctx context.Context, name, unit string, lines int) (model.LogTail, error) {
+	h, ok := f.host(name)
+	if !ok {
+		return model.LogTail{}, errUnknownHost
+	}
+	release, err := f.acquire(ctx)
+	if err != nil {
+		return model.LogTail{}, err
+	}
+	defer release()
+
+	hctx, cancel := context.WithTimeout(ctx, f.timeout)
+	defer cancel()
+	return probe.RunLogs(hctx, f.ex, h.Server.Target(), unit, lines)
+}

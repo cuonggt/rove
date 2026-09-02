@@ -1,0 +1,7 @@
+rove-logs 1
+log.unit=rove-broken.service
+log.source=journald
+log.line=2026-09-02T03:30:13+00:00 93e87481ee44 systemd[1]: Starting rove-broken.service - Deliberately failing fixture unit...
+log.line=2026-09-02T03:30:13+00:00 93e87481ee44 systemd[1]: rove-broken.service: Main process exited, code=exited, status=1/FAILURE
+log.line=2026-09-02T03:30:13+00:00 93e87481ee44 systemd[1]: rove-broken.service: Failed with result 'exit-code'.
+log.line=2026-09-02T03:30:13+00:00 93e87481ee44 systemd[1]: Failed to start rove-broken.service - Deliberately failing fixture unit.

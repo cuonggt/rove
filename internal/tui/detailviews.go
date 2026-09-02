@@ -40,6 +40,7 @@ func (m Model) detailKeys(current screen) string {
 		{"p", "processes", screenProcesses},
 		{"v", "services", screenServices},
 		{"d", "disk", screenDisk},
+		{"l", "logs", screenLogs},
 	}
 	parts := make([]string, 0, len(entries)+2)
 	for _, e := range entries {
@@ -336,4 +337,113 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// --------------------------------------------------------------------- logs
+
+// logsView shows the last lines of the journal, scoped to a unit when the
+// reader came from a unit. It answers the question that always follows
+// "backup-worker.service failed", which is "failed how".
+func (m Model) logsView(h fleet.Host) string {
+	var b strings.Builder
+
+	title := "logs"
+	if m.logUnit != "" {
+		title = "logs  " + strings.TrimSuffix(m.logUnit, ".service")
+	}
+	b.WriteString(m.screenTitle(h, title))
+	b.WriteString("\n\n")
+
+	key := logKey(h.Server.Name, m.logUnit)
+
+	if msg, ok := m.logErr[key]; ok {
+		b.WriteString("  " + brick.Render("could not read the log") + "\n")
+		b.WriteString("  " + dim.Render(msg) + "\n\n")
+		b.WriteString(m.footerWith(screenLogs, ""))
+		return b.String()
+	}
+
+	tail, have := m.logs[key]
+	if !have {
+		b.WriteString(dim.Render("  reading the log…"))
+		b.WriteString("\n\n")
+		b.WriteString(m.footerWith(screenLogs, ""))
+		return b.String()
+	}
+
+	if !tail.Available() {
+		b.WriteString("  " + amber.Render("no log to read") + "\n")
+		if tail.Err != "" {
+			b.WriteString("  " + dim.Render(tail.Err) + "\n")
+		}
+		b.WriteString("\n")
+		b.WriteString(m.footerWith(screenLogs, ""))
+		return b.String()
+	}
+
+	// A tail that looks complete but omits every system unit invites a
+	// wrong conclusion, so the caveat goes above the lines, not below.
+	if tail.Partial() {
+		b.WriteString("  " + amber.Render("showing only this account's own messages") + "\n")
+		b.WriteString("  " + dim.Render("add the login to the systemd-journal or adm group to see the rest") + "\n\n")
+	}
+
+	if len(tail.Lines) == 0 {
+		b.WriteString("  " + dim.Render(orDefault(tail.Err, "no entries")) + "\n\n")
+		b.WriteString(m.footerWith(screenLogs, ""))
+		return b.String()
+	}
+
+	width := m.width - 4
+	if width < 20 {
+		width = 20
+	}
+
+	from, to := m.window(len(tail.Lines))
+	for i := from; i < to; i++ {
+		cursor := " "
+		if i == m.rowIndex {
+			cursor = accent.Render(m.g.cursor)
+		}
+		b.WriteString(cursor + " " + logLineStyle(tail.Lines[i]).Render(pad(tail.Lines[i], width)))
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString(m.footerWith(screenLogs, m.logFooter(tail)))
+	return b.String()
+}
+
+func (m Model) logFooter(tail model.LogTail) string {
+	note := m.scrollNote(len(tail.Lines))
+	src := tail.Source
+	if !tail.FromJournal() {
+		// A scraped syslog file filters by substring, not by unit, so say
+		// where the lines came from rather than implying journald accuracy.
+		src = "file " + src
+	}
+	return src + "  " + m.g.sep + "  " + note
+}
+
+// logLineStyle lifts the lines a reader is scanning for out of the noise.
+// It matches on the words an init system and a kernel actually use.
+func logLineStyle(line string) lipgloss.Style {
+	l := strings.ToLower(line)
+	switch {
+	case strings.Contains(l, "error"), strings.Contains(l, "fatal"),
+		strings.Contains(l, "failed"), strings.Contains(l, "failure"),
+		strings.Contains(l, "panic"), strings.Contains(l, "segfault"):
+		return brick
+	case strings.Contains(l, "warn"), strings.Contains(l, "denied"),
+		strings.Contains(l, "timed out"), strings.Contains(l, "refused"):
+		return amber
+	}
+	return dim
+}
+
+func orDefault(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
 }

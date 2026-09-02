@@ -57,9 +57,17 @@ const (
 	screenProcesses
 	screenServices
 	screenDisk
+	screenLogs
 )
 
 // detail collections arrive asynchronously, like everything else.
+type logsMsg struct {
+	name string
+	unit string
+	tail model.LogTail
+	err  error
+}
+
 type processesMsg struct {
 	name string
 	list model.ProcessList
@@ -89,6 +97,9 @@ type Model struct {
 	// Detail collections are cached per host and refetched when the screen
 	// is opened, so switching back to a host does not stare at an empty
 	// table while the round trip happens.
+	logs     map[string]model.LogTail
+	logErr   map[string]string
+	logUnit  string
 	procs    map[string]model.ProcessList
 	procErr  map[string]string
 	svcs     map[string]model.ServiceList
@@ -119,6 +130,8 @@ func New(f *fleet.Fleet, opts Options) Model {
 		opts:     opts,
 		g:        g,
 		inflight: map[string]bool{},
+		logs:     map[string]model.LogTail{},
+		logErr:   map[string]string{},
 		procs:    map[string]model.ProcessList{},
 		procErr:  map[string]string{},
 		svcs:     map[string]model.ServiceList{},
@@ -196,6 +209,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case hostRefreshedMsg:
 		delete(m.inflight, msg.name)
+		return m, nil
+
+	case logsMsg:
+		key := logKey(msg.name, msg.unit)
+		delete(m.loading, "log:"+key)
+		if msg.err != nil {
+			m.logErr[key] = msg.err.Error()
+		} else {
+			delete(m.logErr, key)
+			m.logs[key] = msg.tail
+		}
 		return m, nil
 
 	case processesMsg:
@@ -327,9 +351,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.openDetail(screenServices)
 	case "d":
 		return m.openDetail(screenDisk)
+	case "l":
+		m.logUnit = m.unitUnderCursor()
+		return m.openDetail(screenLogs)
 
 	case "r":
-		if m.view == screenProcesses || m.view == screenServices {
+		if m.view == screenProcesses || m.view == screenServices || m.view == screenLogs {
 			return m.openDetail(m.view)
 		}
 		m.lastRefresh = time.Now()
@@ -366,8 +393,47 @@ func (m Model) openDetail(s screen) (tea.Model, tea.Cmd) {
 		}
 		m.loading[key] = true
 		return m, m.fetchServices(h.Server.Name)
+	case screenLogs:
+		key := "log:" + logKey(h.Server.Name, m.logUnit)
+		if m.loading[key] {
+			return m, nil
+		}
+		m.loading[key] = true
+		return m, m.fetchLogs(h.Server.Name, m.logUnit)
 	}
 	return m, nil
+}
+
+// unitUnderCursor scopes a log request to the unit the reader is looking at.
+// Anywhere else the question is about the host as a whole.
+func (m Model) unitUnderCursor() string {
+	if m.view != screenServices {
+		return ""
+	}
+	h, ok := m.selected()
+	if !ok {
+		return ""
+	}
+	units := m.svcs[h.Server.Name].Ordered()
+	if m.rowIndex < 0 || m.rowIndex >= len(units) {
+		return ""
+	}
+	return units[m.rowIndex].Name
+}
+
+func logKey(host, unit string) string {
+	if unit == "" {
+		return host + "\x00"
+	}
+	return host + "\x00" + unit
+}
+
+func (m Model) fetchLogs(name, unit string) tea.Cmd {
+	f := m.f
+	return func() tea.Msg {
+		tail, err := f.Logs(context.Background(), name, unit, 0)
+		return logsMsg{name: name, unit: unit, tail: tail, err: err}
+	}
 }
 
 func (m Model) fetchProcesses(name string) tea.Cmd {
@@ -431,6 +497,8 @@ func (m Model) rowCount() int {
 		return len(m.svcs[h.Server.Name].Units)
 	case screenDisk:
 		return len(h.Snap.RealFilesystems())
+	case screenLogs:
+		return len(m.logs[logKey(h.Server.Name, m.logUnit)].Lines)
 	}
 	return 0
 }
@@ -553,6 +621,8 @@ func (m Model) View() string {
 		return m.servicesView(h)
 	case screenDisk:
 		return m.diskView(h)
+	case screenLogs:
+		return m.logsView(h)
 	}
 	return m.fleetView()
 }

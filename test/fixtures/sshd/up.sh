@@ -79,7 +79,7 @@ SYSTEMD_NAME=rove-fixture-ubuntu-systemd
 cat > Dockerfile.ubuntu-systemd <<'DOCKEREOF'
 FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update  && apt-get install -y --no-install-recommends systemd systemd-sysv dbus openssh-server iproute2 procps  && rm -rf /var/lib/apt/lists/*  && ssh-keygen -A  && useradd -m -s /bin/sh tester  && usermod -p '*' tester  && mkdir -p /home/tester/.ssh  && systemctl enable ssh dbus
+RUN apt-get update  && apt-get install -y --no-install-recommends systemd systemd-sysv dbus openssh-server iproute2 procps  && rm -rf /var/lib/apt/lists/*  && ssh-keygen -A  && useradd -m -s /bin/sh tester  && usermod -p '*' tester  && mkdir -p /home/tester/.ssh  && usermod -aG adm tester  && systemctl enable ssh dbus
 COPY authorized_keys /home/tester/.ssh/authorized_keys
 RUN chown -R tester /home/tester/.ssh  && chmod 700 /home/tester/.ssh  && chmod 600 /home/tester/.ssh/authorized_keys
 RUN printf '[Unit]\nDescription=Deliberately failing fixture unit\n[Service]\nType=oneshot\nExecStart=/bin/false\n[Install]\nWantedBy=multi-user.target\n' \
