@@ -371,3 +371,33 @@ func (f *Fleet) Containers(ctx context.Context, name string) (model.ContainerLis
 	defer cancel()
 	return probe.RunDocker(hctx, f.ex, h.Server.Target())
 }
+
+// DiskUsage asks what is filling up one path on one host.
+//
+// It takes its own deadline rather than the fleet timeout: walking a
+// filesystem is a different order of work from a snapshot, and the probe
+// caps itself at twenty seconds, which a ten-second budget would cut off
+// before it could report the cap.
+func (f *Fleet) DiskUsage(ctx context.Context, name, path string) (model.DirUsage, error) {
+	h, ok := f.host(name)
+	if !ok {
+		return model.DirUsage{}, errUnknownHost
+	}
+	release, err := f.acquire(ctx)
+	if err != nil {
+		return model.DirUsage{}, err
+	}
+	defer release()
+
+	budget := f.timeout
+	if budget < duBudget {
+		budget = duBudget
+	}
+	hctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	return probe.RunDu(hctx, f.ex, h.Server.Target(), path)
+}
+
+// duBudget leaves room for the probe's own twenty-second cap plus the round
+// trip, so a slow walk reports itself instead of being killed.
+const duBudget = 30 * time.Second

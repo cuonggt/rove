@@ -60,9 +60,17 @@ const (
 	screenLogs
 	screenPorts
 	screenContainers
+	screenDiskUsage
 )
 
 // detail collections arrive asynchronously, like everything else.
+type duMsg struct {
+	name  string
+	path  string
+	usage model.DirUsage
+	err   error
+}
+
 type containersMsg struct {
 	name string
 	list model.ContainerList
@@ -111,6 +119,12 @@ type Model struct {
 	// Detail collections are cached per host and refetched when the screen
 	// is opened, so switching back to a host does not stare at an empty
 	// table while the round trip happens.
+	du     map[string]model.DirUsage
+	duErr  map[string]string
+	duPath string
+	// duStack is where drilling came from, so backspace walks back out the
+	// way it came in rather than guessing at a parent path.
+	duStack  []string
 	conts    map[string]model.ContainerList
 	contErr  map[string]string
 	ports    map[string]model.PortList
@@ -148,6 +162,8 @@ func New(f *fleet.Fleet, opts Options) Model {
 		opts:     opts,
 		g:        g,
 		inflight: map[string]bool{},
+		du:       map[string]model.DirUsage{},
+		duErr:    map[string]string{},
 		conts:    map[string]model.ContainerList{},
 		contErr:  map[string]string{},
 		ports:    map[string]model.PortList{},
@@ -231,6 +247,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case hostRefreshedMsg:
 		delete(m.inflight, msg.name)
+		return m, nil
+
+	case duMsg:
+		key := logKey(msg.name, msg.path)
+		delete(m.loading, "du:"+key)
+		if msg.err != nil {
+			m.duErr[key] = msg.err.Error()
+		} else {
+			delete(m.duErr, key)
+			m.du[key] = msg.usage
+		}
 		return m, nil
 
 	case containersMsg:
@@ -339,6 +366,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		if m.view != screenFleet {
 			m.view = screenFleet
+			m.duStack, m.duPath = nil, ""
 			m.resetRows()
 		} else if m.filter != "" {
 			m.filter = ""
@@ -376,9 +404,31 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "enter":
-		if _, ok := m.selected(); ok {
-			m.view = screenOverview
-			m.resetRows()
+		switch m.view {
+		case screenDisk:
+			return m.drillInto(m.mountUnderCursor(), true)
+		case screenDiskUsage:
+			return m.drillInto(m.dirUnderCursor(), true)
+		default:
+			if _, ok := m.selected(); ok {
+				m.view = screenOverview
+				m.resetRows()
+			}
+		}
+		return m, nil
+
+	case "backspace", "left":
+		// Walk back out of a drill-down one level at a time; leaving the
+		// screen entirely is what esc is for.
+		if m.view == screenDiskUsage && len(m.duStack) > 0 {
+			prev := m.duStack[len(m.duStack)-1]
+			m.duStack = m.duStack[:len(m.duStack)-1]
+			if prev == "" {
+				m.view = screenDisk
+				m.resetRows()
+				return m, nil
+			}
+			return m.drillInto(prev, false)
 		}
 		return m, nil
 
@@ -402,6 +452,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.openDetail(screenContainers)
 
 	case "r":
+		if m.view == screenDiskUsage {
+			// A cached walk would make refresh a no-op, which is the one
+			// thing refresh must never be.
+			if h, ok := m.selected(); ok {
+				delete(m.du, logKey(h.Server.Name, m.duPath))
+			}
+			return m.drillInto(m.duPath, false)
+		}
 		if m.view == screenProcesses || m.view == screenServices || m.view == screenLogs ||
 			m.view == screenPorts || m.view == screenContainers {
 			return m.openDetail(m.view)
@@ -487,6 +545,68 @@ func logKey(host, unit string) string {
 		return host + "\x00"
 	}
 	return host + "\x00" + unit
+}
+
+// drillInto opens a path on the disk-usage screen, remembering where it
+// came from when push is set.
+func (m Model) drillInto(path string, push bool) (tea.Model, tea.Cmd) {
+	h, ok := m.selected()
+	if !ok || path == "" {
+		return m, nil
+	}
+	if push {
+		from := m.duPath
+		if m.view == screenDisk {
+			from = ""
+		}
+		m.duStack = append(m.duStack, from)
+	}
+	m.view = screenDiskUsage
+	m.duPath = path
+	m.resetRows()
+
+	key := "du:" + logKey(h.Server.Name, path)
+	if m.loading[key] {
+		return m, nil
+	}
+	if _, cached := m.du[logKey(h.Server.Name, path)]; cached {
+		return m, nil
+	}
+	m.loading[key] = true
+	return m, m.fetchDu(h.Server.Name, path)
+}
+
+// mountUnderCursor is the filesystem the reader is pointing at.
+func (m Model) mountUnderCursor() string {
+	h, ok := m.selected()
+	if !ok {
+		return ""
+	}
+	disks := h.Snap.RealFilesystems()
+	if m.rowIndex < 0 || m.rowIndex >= len(disks) {
+		return ""
+	}
+	return disks[m.rowIndex].Mount
+}
+
+func (m Model) dirUnderCursor() string {
+	h, ok := m.selected()
+	if !ok {
+		return ""
+	}
+	kids := m.du[logKey(h.Server.Name, m.duPath)].Children()
+	if m.rowIndex < 0 || m.rowIndex >= len(kids) {
+		return ""
+	}
+	return kids[m.rowIndex].Path
+}
+
+func (m Model) fetchDu(name, path string) tea.Cmd {
+	f := m.f
+	return func() tea.Msg {
+		usage, err := f.DiskUsage(context.Background(), name, path)
+		return duMsg{name: name, path: path, usage: usage, err: err}
+	}
 }
 
 func (m Model) fetchContainers(name string) tea.Cmd {
@@ -580,6 +700,8 @@ func (m Model) rowCount() int {
 		return len(m.ports[h.Server.Name].Listeners)
 	case screenContainers:
 		return len(m.conts[h.Server.Name].Containers)
+	case screenDiskUsage:
+		return len(m.du[logKey(h.Server.Name, m.duPath)].Children())
 	}
 	return 0
 }
@@ -708,6 +830,8 @@ func (m Model) View() string {
 		return m.portsView(h)
 	case screenContainers:
 		return m.containersView(h)
+	case screenDiskUsage:
+		return m.diskUsageView(h)
 	}
 	return m.fleetView()
 }

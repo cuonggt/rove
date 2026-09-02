@@ -694,3 +694,111 @@ func containerStyle(c model.Container) lipgloss.Style {
 		return dim
 	}
 }
+
+// --------------------------------------------------------------- drill-down
+
+// diskUsageView answers what is filling a filesystem up. Every figure here
+// can be a floor rather than a measurement -- an unprivileged du skips what
+// it cannot read and still prints a plausible total -- so the screen says
+// which it is before showing a single number.
+func (m Model) diskUsageView(h fleet.Host) string {
+	var b strings.Builder
+	b.WriteString(m.screenTitle(h, "disk  "+m.duPath))
+	b.WriteString("\n\n")
+
+	key := logKey(h.Server.Name, m.duPath)
+
+	if msg, ok := m.duErr[key]; ok {
+		b.WriteString("  " + brick.Render("could not measure "+m.duPath) + "\n")
+		b.WriteString("  " + dim.Render(msg) + "\n\n")
+		b.WriteString(m.footerWith(screenDiskUsage, ""))
+		return b.String()
+	}
+
+	usage, have := m.du[key]
+	if !have {
+		b.WriteString(dim.Render("  measuring " + m.duPath + "…"))
+		b.WriteString("\n  " + dim.Render("walking a large filesystem takes a while; the probe caps itself at 20s") + "\n\n")
+		b.WriteString(m.footerWith(screenDiskUsage, ""))
+		return b.String()
+	}
+	if usage.Err != "" {
+		b.WriteString("  " + amber.Render(usage.Err) + "\n\n")
+		b.WriteString(m.footerWith(screenDiskUsage, ""))
+		return b.String()
+	}
+
+	// The caveat goes above the numbers, because it changes what they mean.
+	if !usage.Exact() {
+		switch {
+		case usage.TimedOut:
+			b.WriteString("  " + amber.Render("the walk hit its time limit; these are floors, not totals") + "\n\n")
+		case usage.Shallow:
+			b.WriteString("  " + amber.Render("this du cannot descend; only the total is known") + "\n\n")
+		default:
+			b.WriteString("  " + amber.Render(fmt.Sprintf(
+				"%d directories could not be read; every figure below is a floor", usage.Unreadable)) + "\n\n")
+		}
+	}
+
+	kids := usage.Children()
+	if len(kids) == 0 {
+		b.WriteString("  " + dim.Render(fmt.Sprintf("%s holds %s, with nothing below it",
+			m.duPath, humanKB(usage.Total()))) + "\n\n")
+		b.WriteString(m.footerWith(screenDiskUsage, m.duFooter(usage)))
+		return b.String()
+	}
+
+	const sizeW, shareW, barW = 10, 6, 16
+	pathW := m.width - (2 + sizeW + 1 + shareW + 1 + barW + 3)
+	if pathW < 16 {
+		pathW = 16
+	}
+
+	header := "  " + padLeft("SIZE", sizeW) + " " + padLeft("SHARE", shareW) + " " +
+		pad("", barW) + "  " + pad("PATH", pathW)
+	b.WriteString(dim.Render(header))
+	b.WriteString("\n")
+
+	from, to := m.window(len(kids))
+	for i := from; i < to; i++ {
+		e := kids[i]
+		cursor := " "
+		if i == m.rowIndex {
+			cursor = accent.Render(m.g.cursor)
+		}
+		share := usage.Share(e)
+		// Shaded against the parent, so the one directory responsible for a
+		// full disk is visible without reading a single number.
+		style := plain
+		if share >= 50 {
+			style = amber
+		}
+		b.WriteString(cursor + " " +
+			style.Render(padLeft(humanKB(e.KB), sizeW)) + " " +
+			dim.Render(padLeft(fmt.Sprintf("%.0f%%", share), shareW)) + " " +
+			style.Render(bar(share, barW, m.g)) + "  " +
+			pad(e.Path, pathW))
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString(m.footerWith(screenDiskUsage, m.duFooter(usage)))
+	return b.String()
+}
+
+func (m Model) duFooter(usage model.DirUsage) string {
+	total := humanKB(usage.Total())
+	if !usage.Exact() {
+		total = "at least " + total
+	}
+	parts := []string{total}
+	if n := len(usage.Children()); n > 0 {
+		parts = append(parts, m.scrollNote(n))
+	}
+	parts = append(parts, "enter to descend")
+	if len(m.duStack) > 0 {
+		parts = append(parts, "backspace to go back")
+	}
+	return strings.Join(parts, "  "+m.g.sep+"  ")
+}

@@ -297,3 +297,83 @@ func TestFleetProbeReportsNoRuntimeOnFixtures(t *testing.T) {
 		}
 	}
 }
+
+// Drill-down, end to end: the question behind "/var is 91% full".
+func TestDrillDownFindsWhatIsFillingAPath(t *testing.T) {
+	f := newFleet(t)
+	ctx := context.Background()
+	hosts := f.Hosts()
+	if len(hosts) == 0 {
+		t.Skip("no hosts")
+	}
+	host := hosts[0].Server.Name
+
+	usage, err := f.DiskUsage(ctx, host, "/var")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.Err != "" {
+		t.Fatalf("du failed: %s", usage.Err)
+	}
+	if usage.Total() <= 0 {
+		t.Fatal("no total for /var")
+	}
+	if usage.Path != "/var" {
+		t.Errorf("path = %q", usage.Path)
+	}
+
+	kids := usage.Children()
+	if len(kids) == 0 {
+		t.Fatal("/var has subdirectories; none were reported")
+	}
+	for i := 1; i < len(kids); i++ {
+		if kids[i-1].KB < kids[i].KB {
+			t.Fatalf("children are not largest-first at %d", i)
+		}
+	}
+	// Shares must be a meaningful fraction of the parent, not of nothing.
+	if s := usage.Share(kids[0]); s <= 0 || s > 100 {
+		t.Errorf("largest child is %.1f%% of the parent", s)
+	}
+
+	// Descending into the largest child must work the same way.
+	deeper, err := f.DiskUsage(ctx, host, kids[0].Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deeper.Total() > usage.Total() {
+		t.Errorf("child %s (%d) larger than its parent (%d)", kids[0].Path, deeper.Total(), usage.Total())
+	}
+}
+
+// An unprivileged du skips what it cannot read and still prints a plausible
+// total. Every fixture logs in unprivileged, so this is the common case.
+func TestUnreadableDirectoriesAreCounted(t *testing.T) {
+	f := newFleet(t)
+	const host = "rove-fixture-ubuntu-systemd"
+	if _, ok := f.Server(host); !ok {
+		t.Skip("systemd fixture not running")
+	}
+	usage, err := f.DiskUsage(context.Background(), host, "/var")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.Unreadable == 0 {
+		t.Skip("this account could read all of /var; nothing to assert")
+	}
+	if usage.Exact() {
+		t.Error("a walk that skipped directories must not claim to be exact")
+	}
+}
+
+// A mount point arrives from the host's own df output.
+func TestHostilePathNeverReachesTheHost(t *testing.T) {
+	f := newFleet(t)
+	hosts := f.Hosts()
+	if len(hosts) == 0 {
+		t.Skip("no hosts")
+	}
+	if _, err := f.DiskUsage(context.Background(), hosts[0].Server.Name, "/var; id > /tmp/rove-pwned"); err == nil {
+		t.Fatal("a shell-injecting path was accepted")
+	}
+}

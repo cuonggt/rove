@@ -500,3 +500,117 @@ func TestContainersViewFlagsPublishedPorts(t *testing.T) {
 		t.Error("running containers sort above stopped ones")
 	}
 }
+
+func duModel(t *testing.T, usage model.DirUsage) Model {
+	t.Helper()
+	m := healthy(t, 120, "web-01")
+	m.view = screenDiskUsage
+	m.duPath = usage.Path
+	m.du[logKey("web-01", usage.Path)] = usage
+	return m
+}
+
+// Every figure from an unprivileged du is a floor. Saying so after the
+// numbers would be too late; it changes what they mean.
+func TestDrillDownFlagsInexactFiguresBeforeTheNumbers(t *testing.T) {
+	cases := []struct {
+		name  string
+		usage model.DirUsage
+		want  string
+	}{
+		{"unreadable", model.DirUsage{
+			Path: "/var", Unreadable: 6,
+			Entries: []model.DirEntry{{Path: "/var", KB: 1000}, {Path: "/var/log", KB: 900}},
+		}, "6 directories could not be read"},
+		{"timed out", model.DirUsage{
+			Path: "/var", TimedOut: true,
+			Entries: []model.DirEntry{{Path: "/var", KB: 1000}, {Path: "/var/log", KB: 900}},
+		}, "hit its time limit"},
+		{"shallow", model.DirUsage{
+			Path: "/var", Shallow: true,
+			Entries: []model.DirEntry{{Path: "/var", KB: 1000}},
+		}, "cannot descend"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			out := duModel(t, c.usage).View()
+			if !strings.Contains(out, c.want) {
+				t.Errorf("missing %q in:\n%s", c.want, out)
+			}
+			if !strings.Contains(out, "at least") {
+				t.Error("an inexact total must be labelled as a floor")
+			}
+			// The caveat has to precede the table it qualifies.
+			if i, j := strings.Index(out, c.want), strings.Index(out, "SIZE"); j >= 0 && i > j {
+				t.Error("the caveat appears below the numbers it qualifies")
+			}
+		})
+	}
+}
+
+func TestDrillDownExactRunSaysNothingExtra(t *testing.T) {
+	out := duModel(t, model.DirUsage{
+		Path:    "/var",
+		Entries: []model.DirEntry{{Path: "/var", KB: 1000}, {Path: "/var/log", KB: 900}},
+	}).View()
+
+	if strings.Contains(out, "at least") || strings.Contains(out, "floor") {
+		t.Error("a complete walk should not hedge")
+	}
+	if !strings.Contains(out, "90%") {
+		t.Error("share of the parent is the number people scan for")
+	}
+}
+
+// Enter descends, backspace walks back out the way it came in.
+func TestDrillDownNavigation(t *testing.T) {
+	m := healthy(t, 120, "web-01")
+	m.view = screenDisk
+	m.rowIndex = 0
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+	if got.view != screenDiskUsage {
+		t.Fatalf("enter on a mount should drill in, got view %v", got.view)
+	}
+	if got.duPath == "" {
+		t.Fatal("no path was selected to drill into")
+	}
+	first := got.duPath
+
+	// Descend again into a child.
+	got.du[logKey("web-01", first)] = model.DirUsage{
+		Path:    first,
+		Entries: []model.DirEntry{{Path: first, KB: 100}, {Path: first + "/log", KB: 90}},
+	}
+	got.rowIndex = 0
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	deeper := next.(Model)
+	if deeper.duPath != first+"/log" {
+		t.Fatalf("duPath = %q, want %q", deeper.duPath, first+"/log")
+	}
+
+	// And back out, one level at a time.
+	next, _ = deeper.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	back := next.(Model)
+	if back.duPath != first {
+		t.Errorf("backspace should return to %q, got %q", first, back.duPath)
+	}
+	next, _ = back.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	if out := next.(Model); out.view != screenDisk {
+		t.Errorf("backspace at the top should return to the disk list, got %v", out.view)
+	}
+}
+
+// Leaving the screen must not strand a trail that later backspaces walk.
+func TestEscapeClearsTheDrillTrail(t *testing.T) {
+	m := healthy(t, 120, "web-01")
+	m.view = screenDisk
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	next, _ = next.(Model).Update(tea.KeyMsg{Type: tea.KeyEsc})
+
+	got := next.(Model)
+	if got.view != screenFleet || len(got.duStack) != 0 || got.duPath != "" {
+		t.Errorf("view=%v stack=%v path=%q", got.view, got.duStack, got.duPath)
+	}
+}

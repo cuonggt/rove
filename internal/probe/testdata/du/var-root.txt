@@ -1,0 +1,12 @@
+rove-du 1
+du.path=/var
+entry=15092	/var
+entry=8532	/var/log
+entry=5504	/var/lib
+entry=1040	/var/cache
+entry=4	/var/spool
+entry=0	/var/tmp
+entry=0	/var/opt
+entry=0	/var/mail
+entry=0	/var/local
+entry=0	/var/backups
