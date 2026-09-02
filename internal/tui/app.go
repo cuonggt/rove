@@ -59,9 +59,16 @@ const (
 	screenDisk
 	screenLogs
 	screenPorts
+	screenContainers
 )
 
 // detail collections arrive asynchronously, like everything else.
+type containersMsg struct {
+	name string
+	list model.ContainerList
+	err  error
+}
+
 type portsMsg struct {
 	name string
 	list model.PortList
@@ -104,6 +111,8 @@ type Model struct {
 	// Detail collections are cached per host and refetched when the screen
 	// is opened, so switching back to a host does not stare at an empty
 	// table while the round trip happens.
+	conts    map[string]model.ContainerList
+	contErr  map[string]string
 	ports    map[string]model.PortList
 	portErr  map[string]string
 	logs     map[string]model.LogTail
@@ -139,6 +148,8 @@ func New(f *fleet.Fleet, opts Options) Model {
 		opts:     opts,
 		g:        g,
 		inflight: map[string]bool{},
+		conts:    map[string]model.ContainerList{},
+		contErr:  map[string]string{},
 		ports:    map[string]model.PortList{},
 		portErr:  map[string]string{},
 		logs:     map[string]model.LogTail{},
@@ -220,6 +231,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case hostRefreshedMsg:
 		delete(m.inflight, msg.name)
+		return m, nil
+
+	case containersMsg:
+		delete(m.loading, "cont:"+msg.name)
+		if msg.err != nil {
+			m.contErr[msg.name] = msg.err.Error()
+		} else {
+			delete(m.contErr, msg.name)
+			m.conts[msg.name] = msg.list
+		}
 		return m, nil
 
 	case portsMsg:
@@ -377,10 +398,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.openDetail(screenLogs)
 	case "n":
 		return m.openDetail(screenPorts)
+	case "c":
+		return m.openDetail(screenContainers)
 
 	case "r":
 		if m.view == screenProcesses || m.view == screenServices || m.view == screenLogs ||
-			m.view == screenPorts {
+			m.view == screenPorts || m.view == screenContainers {
 			return m.openDetail(m.view)
 		}
 		m.lastRefresh = time.Now()
@@ -417,6 +440,13 @@ func (m Model) openDetail(s screen) (tea.Model, tea.Cmd) {
 		}
 		m.loading[key] = true
 		return m, m.fetchServices(h.Server.Name)
+	case screenContainers:
+		key := "cont:" + h.Server.Name
+		if m.loading[key] {
+			return m, nil
+		}
+		m.loading[key] = true
+		return m, m.fetchContainers(h.Server.Name)
 	case screenPorts:
 		key := "port:" + h.Server.Name
 		if m.loading[key] {
@@ -457,6 +487,14 @@ func logKey(host, unit string) string {
 		return host + "\x00"
 	}
 	return host + "\x00" + unit
+}
+
+func (m Model) fetchContainers(name string) tea.Cmd {
+	f := m.f
+	return func() tea.Msg {
+		list, err := f.Containers(context.Background(), name)
+		return containersMsg{name: name, list: list, err: err}
+	}
 }
 
 func (m Model) fetchPorts(name string) tea.Cmd {
@@ -540,6 +578,8 @@ func (m Model) rowCount() int {
 		return len(m.logs[logKey(h.Server.Name, m.logUnit)].Lines)
 	case screenPorts:
 		return len(m.ports[h.Server.Name].Listeners)
+	case screenContainers:
+		return len(m.conts[h.Server.Name].Containers)
 	}
 	return 0
 }
@@ -666,6 +706,8 @@ func (m Model) View() string {
 		return m.logsView(h)
 	case screenPorts:
 		return m.portsView(h)
+	case screenContainers:
+		return m.containersView(h)
 	}
 	return m.fleetView()
 }

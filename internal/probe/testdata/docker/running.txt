@@ -1,0 +1,20 @@
+rove-docker 1
+docker.cli=docker
+docker.source=docker
+docker.version=29.4.0
+container=e9f2dc2d7dd8fc11e9225ba568a4451e8eb26f6c08e41545ee5ef2c04b62d129	running	rove-fixture-ubuntu-systemd	rove-fixture-ubuntu-systemd	Up 2 hours	0.0.0.0:22206->22/tcp, [::]:22206->22/tcp
+container=3920d28b8b6445cb2328942d61c645c227f4fb373e5fe52619e6027ae9a92fd2	running	rove-fixture-amazonlinux-2023	rove-fixture-amazonlinux-2023	Up 2 hours	0.0.0.0:22205->22/tcp, [::]:22205->22/tcp
+container=61f84ffe7bc0f263d10afac96e662f5722e16c16d2d8ce841b691f2b30f3ae89	running	rove-fixture-rockylinux-9	rove-fixture-rockylinux-9	Up 2 hours	0.0.0.0:22204->22/tcp, [::]:22204->22/tcp
+container=de281bc3afc0aa9b56684811ebb571ec80053ffa489097e7719bb220266e42d2	running	rove-fixture-debian-12	rove-fixture-debian-12	Up 2 hours	0.0.0.0:22203->22/tcp, [::]:22203->22/tcp
+container=d061f9a6154b316b965ac21a0b3cd90957783f124e147222e87acfce1ed20964	running	rove-fixture-ubuntu-24-04	rove-fixture-ubuntu-24-04	Up 2 hours	0.0.0.0:22202->22/tcp, [::]:22202->22/tcp
+container=028ceabb2c7e7c8ceff7a75647c9449e4f12d6ecebbac2619f29aa8717cae369	running	rove-fixture-alpine-3-20	rove-fixture-alpine-3-20	Up 2 hours	0.0.0.0:22201->22/tcp, [::]:22201->22/tcp
+container=6ed95cd7faa3774ad0a5d85476b8fcdf15c5333d7c990fa20f6f14b86e5d3301	running	buildx_buildkit_kamal-local-registry-docker-container0	moby/buildkit:buildx-stable-1	Up 11 days	
+container=974254696b84f8debab71cc09e19dec541ad7d4d787ef1095061397bd745c8a6	running	kamal-docker-registry	registry:3	Up 4 days	127.0.0.1:5555->5000/tcp
+container=cb9d597f4eb61ef90a7c7920d727d4ac859c27f4a9c1e0e8464af3db9e5d9d1b	exited	autoklose-laravel.test-1	sail-8.2/app	Exited (0) 4 days ago	
+container=6e6637bced491e6c5a1205e51034cbc074476dc6d30b28008e0de629d82f2ac8	exited	autoklose-mysql-1	mysql:8.0	Exited (1) 4 days ago	
+container=3778e960143c2a6c6ca6099ee2442454e104989a26bf416515f82ecb4002d5ad	exited	autoklose-mailhog-1	mailhog/mailhog:latest	Exited (2) 4 days ago	
+container=4065ae20d22597f5f4a61c604f96032c91b384407cfa2f14ba0d7b0a03ab1343	running	autoklose-elasticsearch-1	docker.elastic.co/elasticsearch/elasticsearch:7.17.0	Up 4 days	0.0.0.0:9200->9200/tcp, [::]:9200->9200/tcp, 9300/tcp
+container=d77a825a09f3563cf4030fd770e11ed51c4bcc1e73ab7fd73e775f02263dadac	exited	autoklose-redis-1	redis:6.2.12	Exited (0) 4 days ago	
+container=f18808dcb5b16a6184b1ca061fe8c92eb4a3820e62b5759b11fd7696945800b0	running	buildx_buildkit_kamal-local-docker-container0	sha256:37895bc5b3fddd34f1b99286c3d88da20daa9d7a487f42e2d77bd2dab74a025c	Up 11 days	
+container=f6b630c0645f02db9acf8104a10227314f318de1b6cbf986fc117bbcebd732ef	exited	autoklose-app-1	autoklose/app:latest	Exited (137) 17 months ago	
+container=19a45dc0f905db2d38ea5ff0cc47fa1247de3f4cf6be75b7439d1dce33cfd535	exited	autoklose-node-1	autoklose/node:latest	Exited (128) 17 months ago	

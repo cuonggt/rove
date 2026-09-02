@@ -117,6 +117,18 @@ else
     echo "svc.init=unknown"
 fi
 
+# --- containers -------------------------------------------------------
+# Presence only. Listing containers means talking to a daemon, which is far
+# too expensive for every host on every refresh -- but knowing that a host
+# runs containers changes how its process list should be read, and that is
+# worth one command -v.
+for _rt in docker podman nerdctl; do
+    if command -v "$_rt" >/dev/null 2>&1; then
+        echo "container.runtime=$_rt"
+        break
+    fi
+done
+
 # --- timing -----------------------------------------------------------
 if [ -n "$_t0" ] && [ -r /proc/uptime ]; then
     _t1=$(cut -d' ' -f1 /proc/uptime 2>/dev/null)

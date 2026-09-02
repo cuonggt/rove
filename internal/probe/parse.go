@@ -89,6 +89,8 @@ func Parse(out []byte) (model.Snapshot, error) {
 			s.SvcQuery = val
 		case "svc.failed":
 			s.FailedUnits = append(s.FailedUnits, val)
+		case "container.runtime":
+			s.ContainerRuntime = val
 		case "probe.ms":
 			s.ProbeMS = atoi64(val)
 		}

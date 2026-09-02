@@ -432,3 +432,71 @@ func TestPortsViewExplainsMissingOwners(t *testing.T) {
 // lipglossWidth measures display cells, so styled output is compared by what
 // the terminal shows rather than by byte length.
 func lipglossWidth(s string) int { return lipgloss.Width(s) }
+
+// Detection has three answers, and collapsing them into an empty table
+// would tell the reader the wrong thing three different ways.
+func TestContainersViewSeparatesTheThreeAnswers(t *testing.T) {
+	cases := []struct {
+		name   string
+		list   model.ContainerList
+		expect string
+		absent string
+	}{
+		{
+			name:   "no runtime at all",
+			list:   model.ContainerList{Source: "none", Err: "no container runtime found on this host"},
+			expect: "no container runtime on this host",
+		},
+		{
+			name:   "installed but unusable",
+			list:   model.ContainerList{CLI: "docker", Source: "none", Err: "docker is installed but its daemon is not reachable"},
+			expect: "docker is installed but unusable",
+			absent: "no container runtime on this host",
+		},
+		{
+			name:   "running with nothing on it",
+			list:   model.ContainerList{CLI: "docker", Source: "docker", Version: "29.4.0"},
+			expect: "with no containers",
+			absent: "unusable",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := healthy(t, 120, "web-01")
+			m.view = screenContainers
+			m.conts["web-01"] = c.list
+
+			out := m.View()
+			if !strings.Contains(out, c.expect) {
+				t.Errorf("missing %q in:\n%s", c.expect, out)
+			}
+			if c.absent != "" && strings.Contains(out, c.absent) {
+				t.Errorf("should not say %q", c.absent)
+			}
+		})
+	}
+}
+
+func TestContainersViewFlagsPublishedPorts(t *testing.T) {
+	m := healthy(t, 140, "web-01")
+	m.view = screenContainers
+	m.conts["web-01"] = model.ContainerList{
+		CLI: "docker", Source: "docker",
+		Containers: []model.Container{
+			{ID: "a", State: "running", Name: "web", Image: "nginx", Status: "Up 2h", Ports: "0.0.0.0:443->443/tcp"},
+			{ID: "b", State: "exited", Name: "job", Image: "busybox", Status: "Exited (1) 3m ago"},
+		},
+	}
+
+	out := m.View()
+	if !strings.Contains(out, "1 running") || !strings.Contains(out, "1 stopped") {
+		t.Error("the footer should count both")
+	}
+	if !strings.Contains(out, "1 publishing") {
+		t.Error("a published port bypasses host firewall rules and should be counted")
+	}
+	// A stopped container is usually why this screen was opened.
+	if strings.Index(out, "web") > strings.Index(out, "job") {
+		t.Error("running containers sort above stopped ones")
+	}
+}

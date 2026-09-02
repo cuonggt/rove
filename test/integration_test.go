@@ -252,3 +252,48 @@ func TestPortsAcrossDistros(t *testing.T) {
 		})
 	}
 }
+
+// None of the fixtures has a container runtime, which is itself the case
+// worth asserting: absence must be reported as absence, not as an empty
+// list that reads like a host with nothing running.
+func TestContainerAbsenceIsReportedAsAbsence(t *testing.T) {
+	f := newFleet(t)
+	ctx := context.Background()
+
+	for _, h := range f.Hosts() {
+		t.Run(h.Server.Name, func(t *testing.T) {
+			list, err := f.Containers(ctx, h.Server.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if list.Available() {
+				// If a fixture ever gains a runtime, the listing must still
+				// be coherent rather than half-parsed.
+				for _, c := range list.Containers {
+					if c.ID == "" || c.Name == "" {
+						t.Errorf("incomplete container: %+v", c)
+					}
+				}
+				return
+			}
+			if list.Err == "" {
+				t.Error("an unavailable runtime must say why")
+			}
+			if list.Installed() {
+				t.Errorf("no fixture installs a runtime, but %q was found", list.CLI)
+			}
+		})
+	}
+}
+
+// The fleet probe detects a runtime cheaply so that a container host can be
+// recognised without listing anything.
+func TestFleetProbeReportsNoRuntimeOnFixtures(t *testing.T) {
+	f := newFleet(t)
+	f.RefreshAll(context.Background())
+	for _, h := range f.Hosts() {
+		if h.Snap.ContainerRuntime != "" {
+			t.Errorf("%s: unexpected runtime %q", h.Server.Name, h.Snap.ContainerRuntime)
+		}
+	}
+}

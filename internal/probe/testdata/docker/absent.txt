@@ -1,0 +1,3 @@
+rove-docker 1
+docker.source=none
+docker.error=no container runtime found on this host

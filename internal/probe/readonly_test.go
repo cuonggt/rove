@@ -17,6 +17,7 @@ func scripts() map[string]string {
 		"services.sh":  ServiceScript,
 		"logs.sh":      LogScript,
 		"ports.sh":     PortScript,
+		"docker.sh":    DockerScript,
 	}
 }
 

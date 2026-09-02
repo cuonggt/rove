@@ -354,3 +354,20 @@ func (f *Fleet) Ports(ctx context.Context, name string) (model.PortList, error) 
 	defer cancel()
 	return probe.RunPorts(hctx, f.ex, h.Server.Target())
 }
+
+// Containers lists what one host's container runtime is running, on demand.
+func (f *Fleet) Containers(ctx context.Context, name string) (model.ContainerList, error) {
+	h, ok := f.host(name)
+	if !ok {
+		return model.ContainerList{}, errUnknownHost
+	}
+	release, err := f.acquire(ctx)
+	if err != nil {
+		return model.ContainerList{}, err
+	}
+	defer release()
+
+	hctx, cancel := context.WithTimeout(ctx, f.timeout)
+	defer cancel()
+	return probe.RunDocker(hctx, f.ex, h.Server.Target())
+}

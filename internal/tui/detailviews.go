@@ -46,6 +46,7 @@ func (m Model) detailKeys(current screen, avail int) string {
 		{"d", "disk", screenDisk},
 		{"l", "logs", screenLogs},
 		{"n", "ports", screenPorts},
+		{"c", "containers", screenContainers},
 	}
 
 	render := func(sep string, labels bool) string {
@@ -574,4 +575,122 @@ func (m Model) portFooter(list model.PortList) string {
 		parts = append(parts, fmt.Sprintf("%d established", n))
 	}
 	return strings.Join(parts, "  "+m.g.sep+"  ")
+}
+
+// --------------------------------------------------------------- containers
+
+// containersView lists what a container runtime is running. Detection is
+// three separate answers, not one: no runtime, a runtime that will not
+// talk, and a runtime with nothing on it. Collapsing them into an empty
+// table would tell the reader the wrong thing three different ways.
+func (m Model) containersView(h fleet.Host) string {
+	var b strings.Builder
+	b.WriteString(m.screenTitle(h, "containers"))
+	b.WriteString("\n\n")
+
+	if msg, ok := m.contErr[h.Server.Name]; ok {
+		b.WriteString("  " + brick.Render("could not ask about containers") + "\n")
+		b.WriteString("  " + dim.Render(msg) + "\n\n")
+		b.WriteString(m.footerWith(screenContainers, ""))
+		return b.String()
+	}
+
+	list, have := m.conts[h.Server.Name]
+	if !have {
+		b.WriteString(dim.Render("  looking for a container runtime…"))
+		b.WriteString("\n\n")
+		b.WriteString(m.footerWith(screenContainers, ""))
+		return b.String()
+	}
+
+	if !list.Available() {
+		if list.Installed() {
+			// The binary is there. That is worth saying, because the fix is
+			// a daemon or a group, not an installation.
+			b.WriteString("  " + amber.Render(list.CLI+" is installed but unusable") + "\n")
+		} else {
+			b.WriteString("  " + dim.Render("no container runtime on this host") + "\n")
+		}
+		if list.Err != "" {
+			b.WriteString("  " + dim.Render(list.Err) + "\n")
+		}
+		b.WriteString("\n")
+		b.WriteString(m.footerWith(screenContainers, ""))
+		return b.String()
+	}
+
+	if len(list.Containers) == 0 {
+		b.WriteString("  " + dim.Render(list.Source+" is running, with no containers") + "\n\n")
+		b.WriteString(m.footerWith(screenContainers, m.containerFooter(list)))
+		return b.String()
+	}
+
+	const stateW, portsW = 9, 22
+	nameW, imageW := 24, 28
+	statusW := m.width - (2 + stateW + 1 + nameW + 1 + imageW + 1 + portsW + 2)
+	if statusW < 12 {
+		statusW = 12
+		imageW = maxInt(12, m.width-(2+stateW+1+nameW+1+portsW+2+statusW))
+	}
+
+	header := "  " + pad("STATE", stateW) + " " + pad("NAME", nameW) + " " +
+		pad("IMAGE", imageW) + " " + pad("PORTS", portsW) + "  " + pad("STATUS", statusW)
+	b.WriteString(dim.Render(header))
+	b.WriteString("\n")
+
+	containers := list.Ordered()
+	from, to := m.window(len(containers))
+	for i := from; i < to; i++ {
+		c := containers[i]
+		cursor := " "
+		if i == m.rowIndex {
+			cursor = accent.Render(m.g.cursor)
+		}
+
+		ports := dim.Render(pad(c.Ports, portsW))
+		if c.Exposed() {
+			// A published container port bypasses the host firewall rules
+			// people assume are protecting them, so it gets the accent.
+			ports = accent.Render(pad(c.Ports, portsW))
+		}
+
+		b.WriteString(cursor + " " +
+			containerStyle(c).Render(pad(c.State, stateW)) + " " +
+			pad(c.Name, nameW) + " " +
+			dim.Render(pad(c.Image, imageW)) + " " +
+			ports + "  " +
+			dim.Render(pad(c.Status, statusW)))
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString(m.footerWith(screenContainers, m.containerFooter(list)))
+	return b.String()
+}
+
+func (m Model) containerFooter(list model.ContainerList) string {
+	parts := []string{fmt.Sprintf("%d running", list.RunningCount())}
+	if stopped := len(list.Containers) - list.RunningCount(); stopped > 0 {
+		parts = append(parts, fmt.Sprintf("%d stopped", stopped))
+	}
+	if n := list.ExposedCount(); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d publishing", n))
+	}
+	if list.Version != "" {
+		parts = append(parts, list.Source+" "+list.Version)
+	}
+	return strings.Join(parts, "  "+m.g.sep+"  ")
+}
+
+func containerStyle(c model.Container) lipgloss.Style {
+	switch c.State {
+	case "running":
+		return plain
+	case "exited", "dead":
+		return brick
+	case "paused":
+		return amber
+	default:
+		return dim
+	}
 }

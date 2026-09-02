@@ -1,0 +1,4 @@
+rove-docker 1
+docker.cli=docker
+docker.source=none
+docker.error=docker is installed but its daemon is not reachable

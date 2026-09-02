@@ -34,6 +34,10 @@ type Snapshot struct {
 	SvcQuery    string // ok, error: whether the init system could be read
 	FailedUnits []string
 
+	// ContainerRuntime names a runtime binary found on the host, if any.
+	// It says nothing about whether the daemon is reachable.
+	ContainerRuntime string
+
 	ProbeMS int64
 }
 
