@@ -67,7 +67,10 @@ homebrew_casks:
     repository:
       owner: cuonggt
       name: homebrew-tap
-      branch: main
+      # Must match the tap's default branch. Pinning "main" against a repo
+      # whose default is "master" fails the release after the binaries have
+      # already been published, which is the worst place to find out.
+      branch: master
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     directory: Casks
     homepage: https://github.com/cuonggt/rove
