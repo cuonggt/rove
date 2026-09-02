@@ -97,6 +97,12 @@ var _ = fleet.New
 // list is readable, and it carries a unit that always fails.
 func TestRenderDetailScreens(t *testing.T) {
 	f := newFleet(t)
+	// systemd as PID 1 in a container does not boot in every environment,
+	// and up.sh drops the box from the config when it does not. Skipping
+	// beats failing on an absent fixture.
+	if _, ok := f.Server("rove-fixture-ubuntu-systemd"); !ok {
+		t.Skip("systemd fixture not running; see test/fixtures/sshd/up.sh output")
+	}
 	f.RefreshAll(context.Background())
 
 	m := tui.New(f, tui.Options{Interval: time.Hour, ConfigPath: configPath})

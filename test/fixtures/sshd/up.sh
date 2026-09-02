@@ -26,6 +26,23 @@ BOXES=(
   "amazonlinux:2023|22205|dnf install -y --setopt=install_weak_deps=False openssh-server shadow-utils procps-ng iproute && dnf clean all && useradd -m -s /bin/sh tester && usermod -p '*' tester"
 )
 
+# Waits for a port, and says so when it never opens. The previous version
+# printed "ok" unconditionally, so a fixture that never started was
+# reported as ready and every test against it failed later with an ssh
+# error that pointed nowhere.
+wait_for_port() {
+    port=$1
+    tries=$2
+    while [ "$tries" -gt 0 ]; do
+        if nc -z 127.0.0.1 "$port" 2>/dev/null; then
+            return 0
+        fi
+        tries=$((tries - 1))
+        sleep 1
+    done
+    return 1
+}
+
 [ -f tk ] || ssh-keygen -t ed25519 -N '' -C 'rove-sshd-fixture' -f tk -q
 cp tk.pub authorized_keys
 
@@ -94,7 +111,27 @@ docker build -q -f Dockerfile.ubuntu-systemd -t "$SYSTEMD_NAME" . >/dev/null
 docker rm -f "$SYSTEMD_NAME" >/dev/null 2>&1 || true
 docker run -d --name "$SYSTEMD_NAME"   --privileged --cgroupns=host   -v /sys/fs/cgroup:/sys/fs/cgroup:rw   -p "$SYSTEMD_PORT:22" "$SYSTEMD_NAME" >/dev/null
 
-cat >> config <<CONFIGEOF
+for box in "${BOXES[@]}"; do
+  IFS='|' read -r image port install <<< "$box"
+  printf 'waiting for %s on %s ... ' "$image" "$port"
+  if wait_for_port "$port" 60; then
+    echo "ok"
+  else
+    echo "FAILED"
+    echo "sshd never listened on $port; container logs:" >&2
+    docker logs --tail 30 "rove-fixture-$(echo "$image" | tr ':.' '--')" >&2 || true
+    exit 1
+  fi
+done
+
+# systemd as PID 1 inside a container depends on cgroup layout and on what
+# the host allows, and it does not boot everywhere. That is not a reason to
+# fail the whole suite: drop the box from the config so the tests needing
+# systemd skip themselves, and say plainly that they were skipped.
+printf 'waiting for systemd box on %s ... ' "$SYSTEMD_PORT"
+if wait_for_port "$SYSTEMD_PORT" 90; then
+  echo "ok"
+  cat >> config <<CONFIGEOF
 # rove: env=fixture tags=ubuntu-systemd,systemd
 Host $SYSTEMD_NAME
     HostName 127.0.0.1
@@ -107,23 +144,12 @@ Host $SYSTEMD_NAME
     LogLevel ERROR
 
 CONFIGEOF
-
-for box in "${BOXES[@]}"; do
-  IFS='|' read -r image port install <<< "$box"
-  printf 'waiting for %s on %s ' "$image" "$port"
-  for _ in $(seq 1 60); do
-    if nc -z 127.0.0.1 "$port" 2>/dev/null; then break; fi
-    sleep 1
-  done
-  echo "ok"
-done
-
-printf 'waiting for systemd box on %s ' "$SYSTEMD_PORT"
-for _ in $(seq 1 90); do
-  if nc -z 127.0.0.1 "$SYSTEMD_PORT" 2>/dev/null; then break; fi
-  sleep 1
-done
-echo "ok"
+else
+  echo "UNAVAILABLE"
+  echo "systemd did not boot in this environment; tests needing it will skip" >&2
+  docker logs --tail 20 "$SYSTEMD_NAME" >&2 || true
+  docker rm -f "$SYSTEMD_NAME" >/dev/null 2>&1 || true
+fi
 
 # The same hosts with no usable key, so the auth-failure path can be tested
 # against a real sshd rejecting a real connection.
