@@ -5,6 +5,7 @@ package tui
 import (
 	"context"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -61,9 +62,17 @@ const (
 	screenPorts
 	screenContainers
 	screenDiskUsage
+	screenProcDetail
 )
 
 // detail collections arrive asynchronously, like everything else.
+type procDetailMsg struct {
+	name   string
+	pid    int
+	detail model.ProcessDetail
+	err    error
+}
+
 type duMsg struct {
 	name  string
 	path  string
@@ -119,6 +128,10 @@ type Model struct {
 	// Detail collections are cached per host and refetched when the screen
 	// is opened, so switching back to a host does not stare at an empty
 	// table while the round trip happens.
+	procDet  map[string]model.ProcessDetail
+	procDErr map[string]string
+	procPID  int
+
 	du     map[string]model.DirUsage
 	duErr  map[string]string
 	duPath string
@@ -162,6 +175,8 @@ func New(f *fleet.Fleet, opts Options) Model {
 		opts:     opts,
 		g:        g,
 		inflight: map[string]bool{},
+		procDet:  map[string]model.ProcessDetail{},
+		procDErr: map[string]string{},
 		du:       map[string]model.DirUsage{},
 		duErr:    map[string]string{},
 		conts:    map[string]model.ContainerList{},
@@ -247,6 +262,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case hostRefreshedMsg:
 		delete(m.inflight, msg.name)
+		return m, nil
+
+	case procDetailMsg:
+		key := procKey(msg.name, msg.pid)
+		delete(m.loading, "procd:"+key)
+		if msg.err != nil {
+			m.procDErr[key] = msg.err.Error()
+		} else {
+			delete(m.procDErr, key)
+			m.procDet[key] = msg.detail
+		}
 		return m, nil
 
 	case duMsg:
@@ -409,6 +435,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.drillInto(m.mountUnderCursor(), true)
 		case screenDiskUsage:
 			return m.drillInto(m.dirUnderCursor(), true)
+		case screenProcesses:
+			return m.openProcess(m.pidUnderCursor())
 		default:
 			if _, ok := m.selected(); ok {
 				m.view = screenOverview
@@ -420,6 +448,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "backspace", "left":
 		// Walk back out of a drill-down one level at a time; leaving the
 		// screen entirely is what esc is for.
+		if m.view == screenProcDetail {
+			m.view = screenProcesses
+			m.resetRows()
+			return m, nil
+		}
 		if m.view == screenDiskUsage && len(m.duStack) > 0 {
 			prev := m.duStack[len(m.duStack)-1]
 			m.duStack = m.duStack[:len(m.duStack)-1]
@@ -452,6 +485,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.openDetail(screenContainers)
 
 	case "r":
+		if m.view == screenProcDetail {
+			if h, ok := m.selected(); ok {
+				delete(m.procDet, procKey(h.Server.Name, m.procPID))
+			}
+			return m.openProcess(m.procPID)
+		}
 		if m.view == screenDiskUsage {
 			// A cached walk would make refresh a no-op, which is the one
 			// thing refresh must never be.
@@ -545,6 +584,49 @@ func logKey(host, unit string) string {
 		return host + "\x00"
 	}
 	return host + "\x00" + unit
+}
+
+// openProcess opens one process on the detail screen.
+func (m Model) openProcess(pid int) (tea.Model, tea.Cmd) {
+	h, ok := m.selected()
+	if !ok || pid <= 0 {
+		return m, nil
+	}
+	m.view = screenProcDetail
+	m.procPID = pid
+	m.resetRows()
+
+	key := "procd:" + procKey(h.Server.Name, pid)
+	if m.loading[key] {
+		return m, nil
+	}
+	m.loading[key] = true
+	return m, m.fetchProcDetail(h.Server.Name, pid)
+}
+
+// pidUnderCursor is the process the reader is pointing at.
+func (m Model) pidUnderCursor() int {
+	h, ok := m.selected()
+	if !ok {
+		return 0
+	}
+	procs := m.procs[h.Server.Name].Procs
+	if m.rowIndex < 0 || m.rowIndex >= len(procs) {
+		return 0
+	}
+	return procs[m.rowIndex].PID
+}
+
+func procKey(host string, pid int) string {
+	return host + "\x00" + strconv.Itoa(pid)
+}
+
+func (m Model) fetchProcDetail(name string, pid int) tea.Cmd {
+	f := m.f
+	return func() tea.Msg {
+		d, err := f.ProcessDetail(context.Background(), name, pid)
+		return procDetailMsg{name: name, pid: pid, detail: d, err: err}
+	}
 }
 
 // drillInto opens a path on the disk-usage screen, remembering where it
@@ -832,6 +914,8 @@ func (m Model) View() string {
 		return m.containersView(h)
 	case screenDiskUsage:
 		return m.diskUsageView(h)
+	case screenProcDetail:
+		return m.procDetailView(h)
 	}
 	return m.fleetView()
 }

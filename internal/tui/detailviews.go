@@ -802,3 +802,147 @@ func (m Model) duFooter(usage model.DirUsage) string {
 	}
 	return strings.Join(parts, "  "+m.g.sep+"  ")
 }
+
+// ----------------------------------------------------------- process detail
+
+// procDetailView is what the process list cannot show: the whole command
+// line, where the process came from, and whether it belongs to a container.
+//
+// It never shows the environment. /proc/PID/environ routinely holds
+// database passwords and API keys, and a diagnostic is not worth putting
+// those into somebody's scrollback.
+func (m Model) procDetailView(h fleet.Host) string {
+	var b strings.Builder
+	key := procKey(h.Server.Name, m.procPID)
+
+	title := fmt.Sprintf("process %d", m.procPID)
+	b.WriteString(m.screenTitle(h, title))
+	b.WriteString("\n\n")
+
+	if msg, ok := m.procDErr[key]; ok {
+		b.WriteString("  " + brick.Render("could not read the process") + "\n")
+		b.WriteString("  " + dim.Render(msg) + "\n\n")
+		b.WriteString(m.footerWith(screenProcesses, ""))
+		return b.String()
+	}
+
+	d, have := m.procDet[key]
+	if !have {
+		b.WriteString(dim.Render("  reading the process…"))
+		b.WriteString("\n\n")
+		b.WriteString(m.footerWith(screenProcesses, ""))
+		return b.String()
+	}
+	if !d.Found() {
+		// A pid from a list taken seconds ago may already be gone. That is
+		// an answer, not a failure.
+		b.WriteString("  " + amber.Render(orDefault(d.Err, "this process is gone")) + "\n\n")
+		b.WriteString(m.footerWith(screenProcesses, ""))
+		return b.String()
+	}
+
+	name := d.Comm
+	if name == "" {
+		name = "process"
+	}
+	b.WriteString("  " + boldStyle.Render(name))
+	if d.Zombie() {
+		// Worth calling out: nothing can be done to a zombie. The parent
+		// never reaped it, so the parent is the problem.
+		b.WriteString("  " + brick.Render("zombie, waiting to be reaped by "+orDefault(d.Parent, "its parent")))
+	}
+	b.WriteString("\n\n")
+
+	if d.Cmdline != "" {
+		for i, line := range wrapText(d.Cmdline, m.width-4) {
+			label := "  "
+			if i > 0 {
+				label = "  "
+			}
+			b.WriteString(label + dim.Render(line) + "\n")
+		}
+		b.WriteString("\n")
+	}
+
+	rows := [][2]string{
+		{"state", d.StateLabel()},
+		{"user", orDefault(d.User, fmt.Sprintf("uid %d", d.UID))},
+		{"parent", parentText(d)},
+		{"threads", fmt.Sprint(d.Threads)},
+		{"running for", humanSeconds(d.ElapsedS)},
+		{"memory", memText(d)},
+	}
+	if d.HasFDs {
+		rows = append(rows, [2]string{"open files", fmt.Sprint(d.FDs)})
+	}
+	if d.Exe != "" {
+		rows = append(rows, [2]string{"executable", d.Exe})
+	}
+	if d.Cwd != "" {
+		rows = append(rows, [2]string{"working dir", d.Cwd})
+	}
+
+	for _, r := range rows {
+		if r[1] == "" {
+			continue
+		}
+		b.WriteString("  " + dim.Render(pad(r[0], 14)) + " " + r[1] + "\n")
+	}
+
+	// The reason the container work matters: on a container host most of
+	// this list belongs to containers, and ps says nothing about it.
+	if d.InContainer() {
+		b.WriteString("\n  " + accent.Render("in container") + " " + d.ShortContainer() + "\n")
+		b.WriteString("  " + dim.Render("press c for the container list") + "\n")
+	}
+
+	if d.Limited {
+		b.WriteString("\n  " + dim.Render("some fields need root or the owning account and were not read") + "\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString(m.footerWith(screenProcesses, "backspace for the list"))
+	return b.String()
+}
+
+func parentText(d model.ProcessDetail) string {
+	if d.PPid == 0 {
+		return ""
+	}
+	if d.Parent != "" {
+		return fmt.Sprintf("%s (%d)", d.Parent, d.PPid)
+	}
+	return fmt.Sprint(d.PPid)
+}
+
+func memText(d model.ProcessDetail) string {
+	if d.RSSKB <= 0 {
+		return ""
+	}
+	if d.VSZKB > 0 {
+		return fmt.Sprintf("%s resident, %s virtual", humanKB(d.RSSKB), humanKB(d.VSZKB))
+	}
+	return humanKB(d.RSSKB) + " resident"
+}
+
+// wrapText breaks a long command line across lines rather than truncating
+// it: the argument that explains what a process is doing is usually at the
+// end, which is exactly what a truncation removes.
+func wrapText(s string, width int) []string {
+	if width < 20 {
+		width = 20
+	}
+	var out []string
+	for len(s) > width {
+		cut := strings.LastIndex(s[:width], " ")
+		if cut <= 0 {
+			cut = width
+		}
+		out = append(out, s[:cut])
+		s = strings.TrimLeft(s[cut:], " ")
+	}
+	if s != "" {
+		out = append(out, s)
+	}
+	return out
+}

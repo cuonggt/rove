@@ -377,3 +377,89 @@ func TestHostilePathNeverReachesTheHost(t *testing.T) {
 		t.Fatal("a shell-injecting path was accepted")
 	}
 }
+
+// Process detail, end to end. Every fixture is itself a container, so pid 1
+// exercises the cgroup path that ps cannot see.
+func TestProcessDetailAcrossDistros(t *testing.T) {
+	f := newFleet(t)
+	ctx := context.Background()
+
+	for _, h := range f.Hosts() {
+		t.Run(h.Server.Name, func(t *testing.T) {
+			d, err := f.ProcessDetail(ctx, h.Server.Name, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !d.Found() {
+				t.Fatalf("pid 1 must exist: %s", d.Err)
+			}
+			if d.Comm == "" {
+				t.Error("no command name")
+			}
+			if d.User == "" && d.UID != 0 {
+				t.Errorf("uid %d resolved to no account", d.UID)
+			}
+			if d.Threads <= 0 {
+				t.Error("a running process has at least one thread")
+			}
+			if d.StateLabel() == "" {
+				t.Error("no state")
+			}
+			// Container detection reads the cgroup path, which a process
+			// in its own cgroup namespace cannot see: these fixtures read
+			// their own cgroup as "0::/". So absence is correct here, and
+			// what matters is that whatever is reported is coherent.
+			if d.InContainer() && len(d.ShortContainer()) != 12 {
+				t.Errorf("container id looks wrong: %q", d.Container)
+			}
+		})
+	}
+}
+
+// The systemd fixture runs with the host cgroup namespace, which is what a
+// real container host looks like from the outside. That is the only place
+// the cgroup path exposes a container id, and it is the case rove is for.
+func TestContainerMembershipIsSeenWhereTheCgroupExposesIt(t *testing.T) {
+	f := newFleet(t)
+	const host = "rove-fixture-ubuntu-systemd"
+	if _, ok := f.Server(host); !ok {
+		t.Skip("systemd fixture not running")
+	}
+	d, err := f.ProcessDetail(context.Background(), host, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.InContainer() {
+		t.Fatal("this fixture shares the host cgroup namespace; its container id should be visible")
+	}
+	if len(d.Container) != 64 || len(d.ShortContainer()) != 12 {
+		t.Errorf("container = %q", d.Container)
+	}
+}
+
+// A pid that has gone is a normal answer, not a transport failure.
+func TestVanishedProcessIsAnAnswer(t *testing.T) {
+	f := newFleet(t)
+	hosts := f.Hosts()
+	if len(hosts) == 0 {
+		t.Skip("no hosts")
+	}
+	d, err := f.ProcessDetail(context.Background(), hosts[0].Server.Name, 4194303)
+	if err != nil {
+		t.Fatalf("a missing pid should not error the transport: %v", err)
+	}
+	if d.Found() || d.Err == "" {
+		t.Errorf("found=%v err=%q", d.Found(), d.Err)
+	}
+}
+
+func TestInvalidPIDNeverReachesTheHost(t *testing.T) {
+	f := newFleet(t)
+	hosts := f.Hosts()
+	if len(hosts) == 0 {
+		t.Skip("no hosts")
+	}
+	if _, err := f.ProcessDetail(context.Background(), hosts[0].Server.Name, -1); err == nil {
+		t.Fatal("a negative pid was accepted")
+	}
+}

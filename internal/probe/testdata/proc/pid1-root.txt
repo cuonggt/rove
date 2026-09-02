@@ -1,0 +1,17 @@
+rove-proc 1
+proc.pid=1
+proc.cmdline=/sbin/init
+proc.comm=systemd
+proc.state=S
+proc.state_text=sleeping
+proc.ppid=0
+proc.uid=0
+proc.vsz_kb=20712
+proc.rss_kb=4848
+proc.threads=1
+proc.user=root
+proc.elapsed_s=1443
+proc.exe=/usr/lib/systemd/systemd
+proc.cwd=/
+proc.fds=54
+proc.container=945133b6f9bbd73e0e69740d7985e4f3e0513012d38604c04b32d50e00347753

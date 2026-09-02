@@ -614,3 +614,102 @@ func TestEscapeClearsTheDrillTrail(t *testing.T) {
 		t.Errorf("view=%v stack=%v path=%q", got.view, got.duStack, got.duPath)
 	}
 }
+
+func procDetailModel(t *testing.T, d model.ProcessDetail) Model {
+	t.Helper()
+	m := healthy(t, 110, "web-01")
+	m.view = screenProcDetail
+	m.procPID = d.PID
+	m.procDet[procKey("web-01", d.PID)] = d
+	return m
+}
+
+// The list truncates the command; the detail screen exists to not.
+func TestProcDetailWrapsTheWholeCommandLine(t *testing.T) {
+	long := "/usr/bin/java -Xmx4g -Dspring.profiles.active=production " +
+		"-Dlogging.config=/etc/app/logback.xml -jar /opt/app/service.jar --server.port=8443"
+	out := procDetailModel(t, model.ProcessDetail{
+		PID: 42, Comm: "java", Cmdline: long, State: "S", StateText: "sleeping",
+		User: "app", Threads: 48, RSSKB: 4_100_000,
+	}).View()
+
+	// The argument that explains what a process does is usually last, which
+	// is exactly what truncation removes.
+	if !strings.Contains(out, "--server.port=8443") {
+		t.Error("the end of the command line was lost")
+	}
+	if !strings.Contains(out, "sleeping (S)") {
+		t.Error("state should read as a word, not a letter")
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if lipglossWidth(line) > 110 {
+			t.Errorf("line overflows: %q", line)
+		}
+	}
+}
+
+// The payoff from the container work: ps gives no hint of this.
+func TestProcDetailNamesTheContainer(t *testing.T) {
+	out := procDetailModel(t, model.ProcessDetail{
+		PID: 42, Comm: "nginx", Cmdline: "nginx: worker",
+		Container: "945133b6f9bbd73e0e69740d7985e4f3e0513012d38604c04b32d50e00347753",
+	}).View()
+
+	if !strings.Contains(out, "in container") || !strings.Contains(out, "945133b6f9bb") {
+		t.Error("container membership should be stated, with the id docker ps shows")
+	}
+}
+
+// A zombie cannot be acted on; the parent is the problem.
+func TestProcDetailExplainsAZombie(t *testing.T) {
+	out := procDetailModel(t, model.ProcessDetail{
+		PID: 9, Comm: "defunct", State: "Z", StateText: "zombie", Parent: "supervisord", PPid: 3,
+	}).View()
+
+	if !strings.Contains(out, "zombie") || !strings.Contains(out, "supervisord") {
+		t.Error("a zombie should name the parent that has not reaped it")
+	}
+}
+
+// A pid from a list taken seconds ago may already be gone.
+func TestProcDetailHandlesAnExitedProcess(t *testing.T) {
+	out := procDetailModel(t, model.ProcessDetail{
+		PID: 4242, Err: "no process 4242; it may have exited since the list was taken",
+	}).View()
+
+	if !strings.Contains(out, "may have exited") {
+		t.Error("a vanished process is an answer, not an error")
+	}
+}
+
+func TestProcDetailFlagsUnreadableFields(t *testing.T) {
+	out := procDetailModel(t, model.ProcessDetail{
+		PID: 1, Comm: "systemd", User: "root", Limited: true,
+	}).View()
+
+	if !strings.Contains(out, "need root") {
+		t.Error("missing fields must be explained, not silently absent")
+	}
+}
+
+// Enter opens a process, backspace returns to the list.
+func TestProcessDetailNavigation(t *testing.T) {
+	m := healthy(t, 110, "web-01")
+	m.view = screenProcesses
+	m.procs["web-01"] = model.ProcessList{
+		Fields: []string{"pid", "user", "cpu", "mem", "rss", "args"},
+		Procs:  []model.Process{{PID: 4831, User: "deploy", Command: "ruby"}},
+	}
+	m.rowIndex = 0
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+	if got.view != screenProcDetail || got.procPID != 4831 {
+		t.Fatalf("view=%v pid=%d", got.view, got.procPID)
+	}
+
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	if back := next.(Model); back.view != screenProcesses {
+		t.Errorf("backspace should return to the list, got %v", back.view)
+	}
+}

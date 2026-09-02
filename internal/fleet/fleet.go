@@ -401,3 +401,20 @@ func (f *Fleet) DiskUsage(ctx context.Context, name, path string) (model.DirUsag
 // duBudget leaves room for the probe's own twenty-second cap plus the round
 // trip, so a slow walk reports itself instead of being killed.
 const duBudget = 30 * time.Second
+
+// ProcessDetail collects everything known about one process on one host.
+func (f *Fleet) ProcessDetail(ctx context.Context, name string, pid int) (model.ProcessDetail, error) {
+	h, ok := f.host(name)
+	if !ok {
+		return model.ProcessDetail{}, errUnknownHost
+	}
+	release, err := f.acquire(ctx)
+	if err != nil {
+		return model.ProcessDetail{}, err
+	}
+	defer release()
+
+	hctx, cancel := context.WithTimeout(ctx, f.timeout)
+	defer cancel()
+	return probe.RunProcDetail(hctx, f.ex, h.Server.Target(), pid)
+}

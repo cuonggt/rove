@@ -12,13 +12,14 @@ import (
 // the same promise, so all of them are linted.
 func scripts() map[string]string {
 	return map[string]string{
-		"probe.sh":     Script,
-		"processes.sh": ProcessScript,
-		"services.sh":  ServiceScript,
-		"logs.sh":      LogScript,
-		"ports.sh":     PortScript,
-		"docker.sh":    DockerScript,
-		"du.sh":        DuScript,
+		"probe.sh":      Script,
+		"processes.sh":  ProcessScript,
+		"services.sh":   ServiceScript,
+		"logs.sh":       LogScript,
+		"ports.sh":      PortScript,
+		"docker.sh":     DockerScript,
+		"du.sh":         DuScript,
+		"procdetail.sh": ProcDetailScript,
 	}
 }
 
