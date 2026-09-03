@@ -36,7 +36,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
-      - run: shellcheck -s sh internal/probe/*.sh
+      # Every script shipped to a host, including the one that writes.
+      - run: shellcheck -s sh internal/probe/*.sh internal/action/*.sh
 
   # Integration runs the real probe over real sshd on six distributions.
   integration:

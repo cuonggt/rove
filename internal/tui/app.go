@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/cuonggt/rove/internal/action"
 	"github.com/cuonggt/rove/internal/fleet"
 	"github.com/cuonggt/rove/internal/model"
 )
@@ -66,6 +67,14 @@ const (
 )
 
 // detail collections arrive asynchronously, like everything else.
+// actionDoneMsg carries the outcome of something that changed a host.
+type actionDoneMsg struct {
+	host   string
+	act    action.Action
+	result action.Result
+	err    error
+}
+
 type procDetailMsg struct {
 	name   string
 	pid    int
@@ -128,6 +137,15 @@ type Model struct {
 	// Detail collections are cached per host and refetched when the screen
 	// is opened, so switching back to a host does not stare at an empty
 	// table while the round trip happens.
+	// menu holds the actions offered for the selected row; pending holds
+	// the one chosen and awaiting confirmation. Both nil means the
+	// interface is read-only, which is its resting state.
+	menu    []action.Action
+	menuIdx int
+	pending *pendingAction
+	actNote string
+	actOK   bool
+
 	procDet  map[string]model.ProcessDetail
 	procDErr map[string]string
 	procPID  int
@@ -264,6 +282,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		delete(m.inflight, msg.name)
 		return m, nil
 
+	case actionDoneMsg:
+		m.pending, m.menu = nil, nil
+		switch {
+		case msg.err != nil:
+			m.actOK, m.actNote = false, msg.err.Error()
+		case !msg.result.OK:
+			m.actOK, m.actNote = false, orDefault(msg.result.Err, "it did not work, and did not say why")
+		default:
+			m.actOK = true
+			m.actNote = msg.act.Summary(msg.host) + ": done"
+			if msg.result.State != "" {
+				m.actNote += ", now " + msg.result.State
+			}
+		}
+		return m, nil
+
 	case procDetailMsg:
 		key := procKey(msg.name, msg.pid)
 		delete(m.loading, "procd:"+key)
@@ -385,6 +419,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// A confirmation prompt owns the keyboard while it is up. Without
+	// this, "y" would scroll a list behind the question it is answering.
+	if m.pending != nil {
+		return m.updatePending(msg)
+	}
+	if m.menu != nil {
+		return m.updateMenu(msg)
+	}
+
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
@@ -483,6 +526,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.openDetail(screenPorts)
 	case "c":
 		return m.openDetail(screenContainers)
+
+	case "a":
+		// The menu is built from the row under the cursor, so it can never
+		// offer to restart a service while a process is highlighted.
+		if acts := m.actionsFor(); len(acts) > 0 {
+			m.menu, m.menuIdx = acts, 0
+			m.actNote = ""
+		}
+		return m, nil
 
 	case "r":
 		if m.view == screenProcDetail {
@@ -619,6 +671,166 @@ func (m Model) pidUnderCursor() int {
 
 func procKey(host string, pid int) string {
 	return host + "\x00" + strconv.Itoa(pid)
+}
+
+// updateMenu drives the list of offered actions.
+func (m Model) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q", "a":
+		m.menu = nil
+		return m, nil
+	case "up", "k":
+		if m.menuIdx > 0 {
+			m.menuIdx--
+		}
+		return m, nil
+	case "down", "j":
+		if m.menuIdx < len(m.menu)-1 {
+			m.menuIdx++
+		}
+		return m, nil
+	case "enter":
+		h, ok := m.selected()
+		if !ok {
+			m.menu = nil
+			return m, nil
+		}
+		m.pending = &pendingAction{act: m.menu[m.menuIdx], host: h.Server.Name}
+		m.menu = nil
+		return m, nil
+	}
+	return m, nil
+}
+
+// updatePending drives the confirmation. A write action takes a keystroke;
+// a dangerous one takes a word, because "y" is muscle memory and typing
+// "yes" is a decision.
+func (m Model) updatePending(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	p := *m.pending
+
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		m.pending = nil
+		return m, nil
+	}
+
+	if p.act.Dangerous() {
+		switch msg.Type {
+		case tea.KeyRunes:
+			p.typed += string(msg.Runes)
+		case tea.KeyBackspace:
+			if p.typed != "" {
+				p.typed = p.typed[:len(p.typed)-1]
+			}
+		case tea.KeyEnter:
+			if p.ready() {
+				m.pending = nil
+				return m, m.runAction(p)
+			}
+			// Not the word: clear it rather than leaving a half-typed
+			// answer that the next Enter might accept.
+			p.typed = ""
+		}
+		m.pending = &p
+		return m, nil
+	}
+
+	switch msg.String() {
+	case "y", "enter":
+		m.pending = nil
+		return m, m.runAction(p)
+	}
+	return m, nil
+}
+
+// pendingAction is an action a person has chosen but not yet agreed to.
+type pendingAction struct {
+	act   action.Action
+	host  string
+	typed string
+}
+
+// A dangerous action asks for a word rather than a keystroke. "y" is
+// muscle memory; typing "yes" is a decision.
+const dangerousWord = "yes"
+
+func (p pendingAction) ready() bool {
+	if p.act.Dangerous() {
+		return p.typed == dangerousWord
+	}
+	return true
+}
+
+// actionsFor lists what can be done to the row under the cursor. The menu
+// is built from what is actually selected, so it can never offer to restart
+// a service while a process is highlighted.
+func (m Model) actionsFor() []action.Action {
+	h, ok := m.selected()
+	if !ok {
+		return nil
+	}
+	switch m.view {
+	case screenServices:
+		units := m.svcs[h.Server.Name].Ordered()
+		if m.rowIndex < 0 || m.rowIndex >= len(units) {
+			return nil
+		}
+		u := units[m.rowIndex]
+		return []action.Action{
+			{Kind: action.ServiceRestart, Target: u.Name, Label: u.ShortName()},
+			{Kind: action.ServiceStart, Target: u.Name, Label: u.ShortName()},
+			{Kind: action.ServiceStop, Target: u.Name, Label: u.ShortName()},
+		}
+	case screenContainers:
+		cs := m.conts[h.Server.Name].Ordered()
+		if m.rowIndex < 0 || m.rowIndex >= len(cs) {
+			return nil
+		}
+		c := cs[m.rowIndex]
+		return []action.Action{
+			{Kind: action.ContainerRestart, Target: c.ID, Label: c.Name},
+			{Kind: action.ContainerStart, Target: c.ID, Label: c.Name},
+			{Kind: action.ContainerStop, Target: c.ID, Label: c.Name},
+		}
+	case screenProcesses, screenProcDetail:
+		pid, label := m.actionProcess()
+		if pid <= 1 {
+			// pid 1 is excluded in the action package too; not offering it
+			// is friendlier than refusing it after the fact.
+			return nil
+		}
+		t := strconv.Itoa(pid)
+		return []action.Action{
+			{Kind: action.ProcessTerm, Target: t, Label: label},
+			{Kind: action.ProcessKill, Target: t, Label: label},
+		}
+	}
+	return nil
+}
+
+func (m Model) actionProcess() (int, string) {
+	h, ok := m.selected()
+	if !ok {
+		return 0, ""
+	}
+	if m.view == screenProcDetail {
+		d := m.procDet[procKey(h.Server.Name, m.procPID)]
+		return m.procPID, orDefault(d.Comm, strconv.Itoa(m.procPID))
+	}
+	procs := m.procs[h.Server.Name].Procs
+	if m.rowIndex < 0 || m.rowIndex >= len(procs) {
+		return 0, ""
+	}
+	p := procs[m.rowIndex]
+	return p.PID, p.Command
+}
+
+func (m Model) runAction(p pendingAction) tea.Cmd {
+	f := m.f
+	return func() tea.Msg {
+		res, err := f.Act(context.Background(), p.host, p.act, action.Confirm(p.host, p.act))
+		return actionDoneMsg{host: p.host, act: p.act, result: res, err: err}
+	}
 }
 
 func (m Model) fetchProcDetail(name string, pid int) tea.Cmd {
@@ -886,6 +1098,24 @@ func (m *Model) clampCursor() {
 }
 
 func (m Model) View() string {
+	base := m.screenView()
+
+	// A prompt replaces the screen rather than floating over it: a modal
+	// drawn on top of a table that still responds to arrow keys is how
+	// people confirm the wrong row.
+	switch {
+	case m.pending != nil:
+		return base + "\n\n" + m.confirmView()
+	case m.menu != nil:
+		return base + "\n\n" + m.menuView()
+	}
+	if banner := m.actionBanner(); banner != "" {
+		return banner + "\n\n" + base
+	}
+	return base
+}
+
+func (m Model) screenView() string {
 	if m.width < minWidth {
 		return dim.Render("rove needs a wider terminal\n")
 	}

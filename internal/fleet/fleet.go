@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cuonggt/rove/internal/action"
 	rexec "github.com/cuonggt/rove/internal/exec"
 	"github.com/cuonggt/rove/internal/model"
 	"github.com/cuonggt/rove/internal/probe"
@@ -417,4 +418,36 @@ func (f *Fleet) ProcessDetail(ctx context.Context, name string, pid int) (model.
 	hctx, cancel := context.WithTimeout(ctx, f.timeout)
 	defer cancel()
 	return probe.RunProcDetail(hctx, f.ex, h.Server.Target(), pid)
+}
+
+// Act performs an action on one host.
+//
+// The fleet holds a Runner rather than reaching for exec directly, so the
+// interface asks the same layer for reading and for writing and never has
+// to know which package either lives in.
+func (f *Fleet) Act(ctx context.Context, name string, a action.Action, c action.Confirmation) (action.Result, error) {
+	h, ok := f.host(name)
+	if !ok {
+		return action.Result{}, errUnknownHost
+	}
+	release, err := f.acquire(ctx)
+	if err != nil {
+		return action.Result{}, err
+	}
+	defer release()
+
+	hctx, cancel := context.WithTimeout(ctx, f.timeout)
+	defer cancel()
+
+	res, err := action.NewRunner(f.ex).Run(hctx, name, h.Server.Target(), a, c)
+	if err != nil {
+		return res, err
+	}
+
+	// An action changes what the last snapshot claimed, so the row must not
+	// keep asserting the old state until the next scheduled refresh.
+	if res.OK {
+		go f.Refresh(context.Background(), name)
+	}
+	return res, nil
 }

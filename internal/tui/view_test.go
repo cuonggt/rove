@@ -713,3 +713,139 @@ func TestProcessDetailNavigation(t *testing.T) {
 		t.Errorf("backspace should return to the list, got %v", back.view)
 	}
 }
+
+func servicesModel(t *testing.T, units ...model.Unit) Model {
+	t.Helper()
+	m := healthy(t, 110, "web-01")
+	m.view = screenServices
+	m.svcs["web-01"] = model.ServiceList{Init: "systemd", Units: units}
+	m.rowIndex = 0
+	return m
+}
+
+func key(m Model, s string) Model {
+	var msg tea.KeyMsg
+	switch s {
+	case "enter":
+		msg = tea.KeyMsg{Type: tea.KeyEnter}
+	case "esc":
+		msg = tea.KeyMsg{Type: tea.KeyEsc}
+	case "down":
+		msg = tea.KeyMsg{Type: tea.KeyDown}
+	default:
+		msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+	}
+	next, _ := m.Update(msg)
+	return next.(Model)
+}
+
+// The menu is built from the selected row, so it can never offer to restart
+// a service while a process is highlighted.
+func TestActionMenuMatchesTheSelectedRow(t *testing.T) {
+	m := key(servicesModel(t, model.Unit{Name: "nginx.service", Active: "active", Sub: "running"}), "a")
+	if len(m.menu) == 0 {
+		t.Fatal("no actions offered for a unit")
+	}
+	out := m.View()
+	if !strings.Contains(out, "Restart nginx on web-01") {
+		t.Errorf("menu should name the action and the host:\n%s", out)
+	}
+	if !strings.Contains(out, "dangerous") || !strings.Contains(out, "write") {
+		t.Error("risk must be visible while choosing, not discovered afterwards")
+	}
+}
+
+// A write action takes a keystroke.
+func TestWriteActionConfirmsWithOneKey(t *testing.T) {
+	m := key(servicesModel(t, model.Unit{Name: "nginx.service"}), "a")
+	m = key(m, "enter") // restart is first
+	if m.pending == nil {
+		t.Fatal("choosing an action should raise a confirmation")
+	}
+	if m.pending.act.Dangerous() {
+		t.Fatal("restart is not dangerous")
+	}
+
+	out := m.View()
+	if !strings.Contains(out, "Restart nginx on web-01") {
+		t.Error("the confirmation must name the machine")
+	}
+	if !strings.Contains(out, "in-flight requests") {
+		t.Error("the confirmation must state the specific consequence")
+	}
+
+	m = key(m, "y")
+	if m.pending != nil {
+		t.Error("y should accept a write action")
+	}
+}
+
+// A dangerous action takes a word. "y" is muscle memory.
+func TestDangerousActionRequiresTheWord(t *testing.T) {
+	m := key(servicesModel(t, model.Unit{Name: "postgres.service"}), "a")
+	m = key(m, "down")
+	m = key(m, "down") // restart, start, stop
+	m = key(m, "enter")
+
+	if m.pending == nil || !m.pending.act.Dangerous() {
+		t.Fatalf("expected a dangerous action, got %+v", m.pending)
+	}
+	if !strings.Contains(m.View(), "Type") {
+		t.Error("a dangerous action must ask for a word")
+	}
+
+	// A keystroke must not be enough.
+	after := key(m, "y")
+	if after.pending == nil {
+		t.Fatal("y alone must not confirm a dangerous action")
+	}
+	after = key(after, "enter")
+	if after.pending == nil {
+		t.Fatal("enter after a wrong answer must not confirm either")
+	}
+	if after.pending.typed != "" {
+		t.Error("a rejected answer should be cleared, not left half-typed")
+	}
+
+	typed := m
+	for _, r := range dangerousWord {
+		typed = key(typed, string(r))
+	}
+	if !typed.pending.ready() {
+		t.Fatalf("typed %q, still not ready", typed.pending.typed)
+	}
+	typed = key(typed, "enter")
+	if typed.pending != nil {
+		t.Error("the word plus enter should confirm")
+	}
+}
+
+// The prompt owns the keyboard: without that, y scrolls the list behind the
+// question it is answering.
+func TestConfirmationOwnsTheKeyboard(t *testing.T) {
+	m := servicesModel(t,
+		model.Unit{Name: "a.service"}, model.Unit{Name: "b.service"}, model.Unit{Name: "c.service"})
+	m = key(key(m, "a"), "enter")
+	before := m.rowIndex
+
+	m = key(m, "j")
+	if m.rowIndex != before {
+		t.Error("navigation keys must not reach the list while a prompt is up")
+	}
+	m = key(m, "esc")
+	if m.pending != nil {
+		t.Error("esc must cancel")
+	}
+}
+
+// pid 1 is never offered, which is friendlier than refusing it afterwards.
+func TestPidOneIsNeverOffered(t *testing.T) {
+	m := healthy(t, 110, "web-01")
+	m.view = screenProcesses
+	m.procs["web-01"] = model.ProcessList{Procs: []model.Process{{PID: 1, Command: "systemd"}}}
+	m.rowIndex = 0
+
+	if acts := key(m, "a").menu; len(acts) != 0 {
+		t.Errorf("pid 1 should offer nothing, got %+v", acts)
+	}
+}

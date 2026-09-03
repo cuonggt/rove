@@ -10,11 +10,13 @@ package test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/cuonggt/rove/internal/action"
 	rexec "github.com/cuonggt/rove/internal/exec"
 	"github.com/cuonggt/rove/internal/fleet"
 	"github.com/cuonggt/rove/internal/inventory"
@@ -461,5 +463,108 @@ func TestInvalidPIDNeverReachesTheHost(t *testing.T) {
 	}
 	if _, err := f.ProcessDetail(context.Background(), hosts[0].Server.Name, -1); err == nil {
 		t.Fatal("a negative pid was accepted")
+	}
+}
+
+// Actions, end to end. The fixture grants passwordless sudo for systemctl
+// only, so this exercises the sudo path the way a real locked-down host
+// would, rather than running as root and proving less.
+func TestActionRestartsAUnit(t *testing.T) {
+	f := newFleet(t)
+	const host = "rove-fixture-ubuntu-systemd"
+	if _, ok := f.Server(host); !ok {
+		t.Skip("systemd fixture not running")
+	}
+	ctx := context.Background()
+
+	// rove-ok exists precisely so that action tests never have to touch
+	// sshd, which is the connection they are running over.
+	const unit = "rove-ok.service"
+	restart := action.Action{Kind: action.ServiceRestart, Target: unit}
+
+	res, err := f.Act(ctx, host, restart, action.Confirm(host, restart))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.OK {
+		t.Fatalf("restart failed: %s (privilege=%s)", res.Err, res.Privilege)
+	}
+	if res.Privilege != "sudo" {
+		t.Errorf("privilege = %q; the fixture logs in unprivileged", res.Privilege)
+	}
+	// An action that reports success without saying what the thing now
+	// looks like leaves the reader to go and check anyway.
+	if res.State != "active" {
+		t.Errorf("state after restart = %q, want active", res.State)
+	}
+}
+
+// Stop then start, so the dangerous path is exercised rather than assumed.
+func TestActionStopsAndStartsAUnit(t *testing.T) {
+	f := newFleet(t)
+	const host = "rove-fixture-ubuntu-systemd"
+	if _, ok := f.Server(host); !ok {
+		t.Skip("systemd fixture not running")
+	}
+	ctx := context.Background()
+	const unit = "rove-ok.service"
+
+	stop := action.Action{Kind: action.ServiceStop, Target: unit}
+	res, err := f.Act(ctx, host, stop, action.Confirm(host, stop))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.OK || res.State == "active" {
+		t.Fatalf("stop: ok=%v state=%q err=%q", res.OK, res.State, res.Err)
+	}
+
+	start := action.Action{Kind: action.ServiceStart, Target: unit}
+	res, err = f.Act(ctx, host, start, action.Confirm(host, start))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.OK || res.State != "active" {
+		t.Fatalf("start: ok=%v state=%q err=%q", res.OK, res.State, res.Err)
+	}
+}
+
+// The fixture's sudo rule covers systemctl and nothing else, so this is a
+// genuine "not permitted" rather than a simulated one.
+func TestActionWithoutPermissionSaysSo(t *testing.T) {
+	f := newFleet(t)
+	const host = "rove-fixture-ubuntu-systemd"
+	if _, ok := f.Server(host); !ok {
+		t.Skip("systemd fixture not running")
+	}
+	// pid 2 is a kernel thread: real, and not ours to signal.
+	a := action.Action{Kind: action.ProcessTerm, Target: "2"}
+	res, err := f.Act(context.Background(), host, a, action.Confirm(host, a))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.OK {
+		t.Fatal("signalling a kernel thread as an unprivileged user should not succeed")
+	}
+	if res.Err == "" {
+		t.Error("a refused action must say why")
+	}
+}
+
+// Nothing reaches a host without a confirmation naming that exact host.
+func TestUnconfirmedActionNeverReachesAHost(t *testing.T) {
+	f := newFleet(t)
+	hosts := f.Hosts()
+	if len(hosts) == 0 {
+		t.Skip("no hosts")
+	}
+	host := hosts[0].Server.Name
+	a := action.Action{Kind: action.ServiceRestart, Target: "rove-ok.service"}
+
+	if _, err := f.Act(context.Background(), host, a, action.Confirmation{}); !errors.Is(err, action.ErrNotConfirmed) {
+		t.Fatalf("err = %v, want ErrNotConfirmed", err)
+	}
+	// A confirmation for another machine is not agreement for this one.
+	if _, err := f.Act(context.Background(), host, a, action.Confirm("somewhere-else", a)); !errors.Is(err, action.ErrNotConfirmed) {
+		t.Fatalf("err = %v, want ErrNotConfirmed", err)
 	}
 }

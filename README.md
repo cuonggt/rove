@@ -110,8 +110,21 @@ test/fixtures/sshd/up.sh && docs/demo-setup.sh && vhs docs/demo.tape
   user's own client rather than reimplementing SSH.
 - **`BatchMode=yes` on every probe.** A host that would prompt fails fast into
   a legible state instead of hanging a goroutine forever.
-- **Read-only.** Nothing rove runs writes to a remote host, and nothing needs
-  sudo. `TestProbeScriptIsReadOnly` enforces it.
+- **Reading never writes.** Every script in `internal/probe` is read-only and
+  needs no sudo, and `TestProbeScriptIsReadOnly` enforces that by parsing
+  them. Everything that changes a host lives in `internal/action`, which
+  `internal/probe` is forbidden to import -- also by test. The guarantee is
+  structural rather than a habit.
+- **Nothing changes without agreement.** An action reaches a host only with a
+  `Confirmation` naming that exact verb, target and machine. The zero value
+  never matches, so a forgotten confirmation fails closed rather than
+  running quietly. Agreeing to restart nginx on staging is not agreement to
+  restart it on production.
+- **Dangerous actions ask for a word, not a keystroke.** Stopping a service,
+  killing a process and stopping a container all require typing `yes`,
+  because `y` is muscle memory. The prompt names the machine and the
+  specific consequence; "are you sure" teaches people to press y without
+  reading. Signalling pid 1 is never offered at all.
 - **Absence is never evidence.** A missing figure is `—`, not zero. An init
   system that is installed but unqueryable is reported as unreadable rather
   than as a host with no failures, and a capped list says what it left out.
