@@ -78,12 +78,21 @@ homebrew_casks:
     # An unsigned binary that arrived over the network is quarantined by
     # Gatekeeper and refuses to run at all. Clearing the attribute on install
     # is the documented way to ship an unsigned cask.
-    hooks:
-      post:
-        install: |
-          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/rove"]
-          end
+    #
+    # Written out rather than using goreleaser's `hooks`, which still emits the
+    # `postflight` stanza Homebrew has deprecated in favour of the declarative
+    # `postflight_steps`. Steps run from staged_path by default, so chdir "."
+    # puts the relative argument on the staged binary; args are not path
+    # specs, so there is no way to name it absolutely. must_succeed is off
+    # because a machine without /usr/bin/xattr has nothing to strip, and that
+    # should not fail the install.
+    custom_block: |
+      postflight_steps do
+        run "/usr/bin/xattr",
+            args:         ["-dr", "com.apple.quarantine", "rove"],
+            chdir:        ".",
+            must_succeed: false
+      end
 
 release:
   footer: |
