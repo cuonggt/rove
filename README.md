@@ -43,8 +43,9 @@ inventory as a second source rather than growing provider adapters of its own.
 
 ## Status
 
-v0.1: discovery, the probe, the interface, and the
-processes, services and disk screens.
+v0.2: discovery, the probe and the interface, plus the screens that answer
+what is wrong — processes and their containers, disks, services, listeners —
+and the first host changes, which always confirm before acting.
 
 ```
 go build -o rove ./cmd/rove
